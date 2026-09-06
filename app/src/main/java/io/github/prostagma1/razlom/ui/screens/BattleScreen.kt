@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,13 +69,17 @@ import io.github.prostagma1.razlom.game.BattleState
 import io.github.prostagma1.razlom.game.Combatant
 import io.github.prostagma1.razlom.game.Outcome
 import io.github.prostagma1.razlom.game.Pos
+import io.github.prostagma1.razlom.game.SkillTarget
+import io.github.prostagma1.razlom.game.Status
 import io.github.prostagma1.razlom.game.Team
+import io.github.prostagma1.razlom.ui.theme.Arcane
 import io.github.prostagma1.razlom.ui.theme.Blood
 import io.github.prostagma1.razlom.ui.theme.Bone
 import io.github.prostagma1.razlom.ui.theme.Ember
 import io.github.prostagma1.razlom.ui.theme.Field
 import io.github.prostagma1.razlom.ui.theme.Ink
 import io.github.prostagma1.razlom.ui.theme.InkRaised
+import io.github.prostagma1.razlom.ui.theme.Frost
 import io.github.prostagma1.razlom.ui.theme.Moss
 import io.github.prostagma1.razlom.ui.theme.Steel
 import kotlinx.coroutines.delay
@@ -106,6 +111,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     val active = battle.active
     val playerTurn = active?.team == Team.PLAYER
     var inspected by remember(battle) { mutableStateOf<Int?>(null) }
+    var skillMode by remember(battle) { mutableStateOf(false) }
+
+    // Режим способности не должен переезжать на следующего бойца.
+    LaunchedEffect(active?.id, battle.round) { skillMode = false }
 
     // Враги ходят сами, с паузой, чтобы было видно, что происходит.
     LaunchedEffect(active?.id, battle.outcome, battle.round) {
@@ -115,8 +124,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
         }
     }
 
-    val reachable = if (playerTurn) battle.reachable() else emptyMap()
-    val targets = if (playerTurn) {
+    val skillAims = if (playerTurn && skillMode) battle.skillTargets() else emptyList()
+    val skillCells = skillAims.map { it.pos }.toSet()
+    val reachable = if (playerTurn && !skillMode) battle.reachable() else emptyMap()
+    val targets = if (playerTurn && !skillMode) {
         battle.units.filter { battle.canTarget(active, it) }.map { it.pos }.toSet()
     } else {
         emptySet()
@@ -166,6 +177,15 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                             when {
                                 battle.outcome != null || !playerTurn -> inspected = unit?.id
 
+                                skillMode -> {
+                                    val aim = skillAims.firstOrNull { it.pos == p }
+                                    if (aim != null) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        battle.useSkill(aim)
+                                    }
+                                    skillMode = false
+                                }
+
                                 unit != null && battle.canTarget(active, unit) -> {
                                     inspected = null
                                     battle.act(unit)
@@ -201,7 +221,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         }
                         drawRect(base, tl, Size(cell, cell))
 
-                        if (p in targets) {
+                        if (p in skillCells) {
+                            drawRect(Field.skill.copy(alpha = 0.5f + 0.35f * pulse), tl, Size(cell, cell))
+                            drawRect(Arcane.copy(alpha = 0.5f + 0.5f * pulse), tl, Size(cell, cell), style = Stroke(3f))
+                        } else if (p in targets) {
                             drawRect(Field.threat.copy(alpha = 0.45f + 0.4f * pulse), tl, Size(cell, cell))
                             drawRect(Blood.copy(alpha = 0.5f + 0.5f * pulse), tl, Size(cell, cell), style = Stroke(3f))
                         } else if (p in reachable) {
@@ -246,6 +269,14 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                             style = Stroke(4f),
                         )
                     }
+                    if (unit.shield > 0) {
+                        drawCircle(
+                            Frost.copy(alpha = 0.85f * alpha),
+                            radius = radius + cell * 0.1f,
+                            center = c,
+                            style = Stroke(3f),
+                        )
+                    }
                     if (unit.id == inspected) {
                         drawCircle(Bone.copy(alpha = 0.8f * alpha), radius = radius + cell * 0.13f, center = c, style = Stroke(2f))
                     }
@@ -259,6 +290,27 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         topLeft = Offset(c.x - glyph.size.width / 2f, c.y - glyph.size.height / 2f),
                         color = Color.Unspecified,
                     )
+
+                    // Значки статусов над фигурой.
+                    val marks = Status.entries.filter { unit.has(it) }
+                    marks.forEachIndexed { i, status ->
+                        val mark = measurer.measure(
+                            status.glyph,
+                            TextStyle(
+                                color = if (status == Status.POISON) Moss else Arcane,
+                                fontSize = (cell * 0.26f).toSp(),
+                                fontWeight = FontWeight.Bold,
+                            ),
+                        )
+                        drawText(
+                            mark,
+                            topLeft = Offset(
+                                c.x - mark.size.width / 2f + (i - (marks.size - 1) / 2f) * cell * 0.26f,
+                                c.y - cell * 0.52f,
+                            ),
+                            alpha = alpha,
+                        )
+                    }
 
                     // Полоска здоровья с «тающим» хвостом недавнего урона.
                     val barW = cell * 0.72f
@@ -304,8 +356,19 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
         ActionPanel(
             battle = battle,
             playerTurn = playerTurn,
+            skillMode = skillMode,
             inspected = battle.units.firstOrNull { it.id == inspected },
             onClearInspect = { inspected = null },
+            onSkill = {
+                val unit = battle.active ?: return@ActionPanel
+                val skill = unit.skill
+                if (skill != null && skill.target == SkillTarget.SELF) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    battle.useSkill(unit)
+                } else {
+                    skillMode = !skillMode
+                }
+            },
         )
     }
 
@@ -430,8 +493,10 @@ private fun TurnOrderStrip(battle: BattleState) {
 private fun ActionPanel(
     battle: BattleState,
     playerTurn: Boolean,
+    skillMode: Boolean,
     inspected: Combatant?,
     onClearInspect: () -> Unit,
+    onSkill: () -> Unit,
 ) {
     val active = battle.active
     Column(
@@ -457,8 +522,11 @@ private fun ActionPanel(
                         color = if (isPlayer) Ember else Blood,
                     )
                     Text(
-                        "HP ${unit.hp}/${unit.maxHp} · ⚔${unit.attack} · дальность ${unit.type.range} · " +
-                            "шагов ${battle.movesLeft}",
+                        buildString {
+                            append("HP ${unit.hp}/${unit.maxHp} · ⚔${unit.attack}")
+                            if (unit.shield > 0) append(" · щит ${unit.shield}")
+                            append(" · дальность ${unit.type.range} · шагов ${battle.movesLeft}")
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Steel,
                     )
@@ -504,10 +572,43 @@ private fun ActionPanel(
 
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val skill = active?.skill
+            if (skill != null) {
+                Button(
+                    onClick = onSkill,
+                    enabled = playerTurn && battle.outcome == null && active.skillReady &&
+                        (skill.target == SkillTarget.SELF || battle.skillTargets().isNotEmpty()),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (skillMode) Arcane else MaterialTheme.colorScheme.primary,
+                        contentColor = Ink,
+                    ),
+                ) {
+                    Text(
+                        when {
+                            !active.skillReady -> "${skill.name} · ${active.cooldown}"
+                            skillMode -> "Отмена"
+                            else -> skill.name
+                        },
+                    )
+                }
+            }
             Button(
                 onClick = { battle.endTurn() },
                 enabled = playerTurn && battle.outcome == null,
-            ) { Text("Закончить ход") }
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = Bone,
+                ),
+            ) { Text("Конец хода") }
+        }
+
+        if (playerTurn && active?.skill != null && active.skillReady) {
+            Text(
+                active.skill!!.description,
+                style = MaterialTheme.typography.labelSmall,
+                color = Arcane,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
 
         Spacer(Modifier.height(6.dp))

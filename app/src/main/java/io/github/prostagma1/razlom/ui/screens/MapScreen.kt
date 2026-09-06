@@ -8,7 +8,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -18,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -46,6 +51,7 @@ private fun glyphFor(kind: NodeKind) = when (kind) {
     NodeKind.ELITE -> "‡"
     NodeKind.REST -> "≈"
     NodeKind.RECRUIT -> "+"
+    NodeKind.SHOP -> "◈"
     NodeKind.BOSS -> "Ω"
 }
 
@@ -69,12 +75,22 @@ fun MapScreen(game: Game, onEnter: (Int) -> Unit) {
     )
 
     Column(Modifier.fillMaxSize()) {
-        Text(
-            game.notice.ifEmpty { "Выберите следующий переход" },
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                game.notice.ifEmpty { "Выберите следующий переход" },
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(Modifier.width(8.dp))
+            GoldTag(game.gold)
+        }
 
         Canvas(
             modifier = Modifier
@@ -192,8 +208,16 @@ fun MapScreen(game: Game, onEnter: (Int) -> Unit) {
         }
 
         PartyBar(game.party)
+        if (game.relics.isNotEmpty()) {
+            Text(
+                "Реликвии: " + game.relics.joinToString(", ") { it.title },
+                style = MaterialTheme.typography.labelSmall,
+                color = Ember,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
         Text(
-            "× схватка   ‡ логово   ≈ привал   + наёмники   Ω Пожиратель",
+            "× схватка   ‡ логово   ≈ привал   + наёмники   ◈ лавка   Ω Пожиратель",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

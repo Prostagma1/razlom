@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Razlom" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Razlom" parent="android:Theme.Material.NoActionBar">
+        <!-- Без этого система показывает белую заставку перед тёмной игрой. -->
+        <item name="android:windowBackground">@color/ink</item>
+        <item name="android:windowSplashScreenBackground">@color/ink</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/ink</item>
+    </style>
 </resources>

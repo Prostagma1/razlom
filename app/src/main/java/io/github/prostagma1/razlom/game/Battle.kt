@@ -18,7 +18,17 @@ class BattleState(
     val height: Int,
     combatants: List<Combatant>,
     val obstacles: Set<Pos>,
+    val relics: Set<Relic> = emptySet(),
+    restore: Restore? = null,
 ) {
+    /** Снимок незаконченного боя, поднятый из сохранения. */
+    data class Restore(
+        val round: Int,
+        val queue: List<Int>,
+        val movesLeft: Int,
+        val talismanSpent: Boolean,
+    )
+
     val units = mutableStateListOf<Combatant>().apply { addAll(combatants) }
     val log = mutableStateListOf<String>()
 
@@ -30,6 +40,11 @@ class BattleState(
         private set
 
     private val queue = mutableStateListOf<Int>()
+    internal var talismanSpent = false
+        private set
+
+    /** Очередь как список идентификаторов — для сохранения. */
+    internal val queueIds: List<Int> get() = queue.toList()
 
     val active: Combatant?
         get() = queue.firstOrNull()?.let { id -> units.firstOrNull { it.id == id && it.alive } }
@@ -38,7 +53,7 @@ class BattleState(
     val turnOrder: List<Combatant>
         get() = queue.mapNotNull { id -> units.firstOrNull { it.id == id && it.alive } }
 
-    /** Счётчик проведённых атак: интерфейс использует его как триггер анимации. */
+    /** Счётчик проведённых действий: интерфейс использует его как триггер анимации. */
     var fxSeq by mutableIntStateOf(0)
         private set
     var fxAttacker by mutableStateOf<Int?>(null)
@@ -49,8 +64,19 @@ class BattleState(
         private set
 
     init {
-        fillQueue()
-        beginTurn()
+        if (restore != null) {
+            round = restore.round
+            queue.addAll(restore.queue)
+            movesLeft = restore.movesLeft
+            talismanSpent = restore.talismanSpent
+            checkOutcome()
+        } else {
+            if (Relic.STONE_SKIN in relics) {
+                units.filter { it.team == Team.PLAYER }.forEach { it.shield += 5 }
+            }
+            fillQueue()
+            advance()
+        }
     }
 
     fun unitAt(p: Pos): Combatant? = units.firstOrNull { it.alive && it.pos == p }
@@ -67,12 +93,7 @@ class BattleState(
             .forEach { queue.add(it.id) }
     }
 
-    private fun beginTurn() {
-        movesLeft = active?.type?.move ?: 0
-    }
-
-    fun endTurn() {
-        if (outcome != null) return
+    private fun dropCurrent() {
         if (queue.isNotEmpty()) queue.removeAt(0)
         while (queue.isNotEmpty() && units.firstOrNull { it.id == queue[0] }?.alive != true) {
             queue.removeAt(0)
@@ -81,7 +102,48 @@ class BattleState(
             round++
             fillQueue()
         }
-        beginTurn()
+    }
+
+    /**
+     * Передаёт ход дальше, пока не найдётся боец, который в состоянии ходить:
+     * яд может добить, оглушение — заставить пропустить ход.
+     */
+    private fun advance() {
+        var guard = 0
+        while (outcome == null && guard++ < 500) {
+            val unit = active ?: run { checkOutcome(); return }
+
+            val poison = unit.statuses[Status.POISON] ?: 0
+            if (poison > 0) {
+                unit.statuses[Status.POISON] = poison - 1
+                hurt(unit, 3, "яд")
+                checkOutcome()
+                if (outcome != null) return
+                if (!unit.alive) {
+                    dropCurrent()
+                    continue
+                }
+            }
+
+            val stun = unit.statuses[Status.STUN] ?: 0
+            if (stun > 0) {
+                unit.statuses[Status.STUN] = stun - 1
+                log += "${unit.type.name} оглушён и пропускает ход"
+                dropCurrent()
+                continue
+            }
+
+            if (unit.cooldown > 0) unit.cooldown--
+            movesLeft = unit.type.move + if (unit.team == Team.PLAYER && Relic.BOOTS in relics) 1 else 0
+            return
+        }
+        checkOutcome()
+    }
+
+    fun endTurn() {
+        if (outcome != null) return
+        dropCurrent()
+        advance()
         checkOutcome()
     }
 
@@ -135,6 +197,12 @@ class BattleState(
 
     // ---- атака ---------------------------------------------------------
 
+    /** Урон бойца с учётом реликвий, действующих прямо сейчас. */
+    private fun power(unit: Combatant): Int {
+        val warStone = unit.team == Team.PLAYER && Relic.WAR_STONE in relics && round == 1
+        return unit.attack + if (warStone) 3 else 0
+    }
+
     fun canTarget(attacker: Combatant, target: Combatant): Boolean {
         if (!target.alive || attacker.pos.dist(target.pos) > attacker.type.range) return false
         return if (attacker.type.ability == Ability.HEAL) {
@@ -148,25 +216,17 @@ class BattleState(
     fun act(target: Combatant) {
         val attacker = active ?: return
         if (!canTarget(attacker, target)) return
-
-        fxAttacker = attacker.id
-        fxFrom = attacker.pos
-        fxTarget = target.pos
-        fxSeq++
+        markFx(attacker, target)
 
         when (attacker.type.ability) {
-            Ability.HEAL -> {
-                val healed = minOf(attacker.attack, target.maxHp - target.hp)
-                target.hp += healed
-                log += "${attacker.type.name}: лечение ${target.type.name} +$healed"
-            }
+            Ability.HEAL -> heal(attacker, target, power(attacker))
 
             Ability.SPLASH -> {
-                damage(attacker, target, attacker.attack)
+                strike(attacker, target, power(attacker))
                 units.filter {
                     it.alive && it.team != attacker.team && it.id != target.id &&
                         it.pos.dist(target.pos) == 1
-                }.forEach { damage(attacker, it, attacker.attack / 2) }
+                }.forEach { strike(attacker, it, power(attacker) / 2) }
             }
 
             Ability.FLANK -> {
@@ -174,40 +234,171 @@ class BattleState(
                     it.alive && it.team == attacker.team && it.id != attacker.id &&
                         it.pos.dist(target.pos) == 1
                 }
-                damage(attacker, target, if (supported) attacker.attack * 3 / 2 else attacker.attack)
+                strike(attacker, target, if (supported) power(attacker) * 3 / 2 else power(attacker))
             }
 
             Ability.PIERCE -> {
-                damage(attacker, target, attacker.attack)
+                strike(attacker, target, power(attacker))
                 val dx = (target.pos.x - attacker.pos.x).coerceIn(-1, 1)
                 val dy = (target.pos.y - attacker.pos.y).coerceIn(-1, 1)
                 if (dx == 0 || dy == 0) {
                     unitAt(Pos(target.pos.x + dx, target.pos.y + dy))
                         ?.takeIf { it.team != attacker.team }
-                        ?.let { damage(attacker, it, attacker.attack / 2) }
+                        ?.let { strike(attacker, it, power(attacker) / 2) }
                 }
             }
 
-            Ability.NONE -> damage(attacker, target, attacker.attack)
+            Ability.NONE -> strike(attacker, target, power(attacker))
         }
 
+        finishAction()
+    }
+
+    // ---- способности ---------------------------------------------------
+
+    /** Кого активный боец может задеть своей способностью прямо сейчас. */
+    fun skillTargets(): List<Combatant> {
+        val unit = active ?: return emptyList()
+        val skill = unit.skill ?: return emptyList()
+        if (!unit.skillReady) return emptyList()
+        return when (skill.target) {
+            SkillTarget.SELF -> listOf(unit)
+            SkillTarget.ALLY -> units.filter {
+                it.alive && it.team == unit.team && unit.pos.dist(it.pos) <= skill.range
+            }
+
+            SkillTarget.ENEMY -> units.filter {
+                it.alive && it.team != unit.team && unit.pos.dist(it.pos) <= skill.range
+            }
+        }
+    }
+
+    fun useSkill(target: Combatant) {
+        val unit = active ?: return
+        val skill = unit.skill ?: return
+        if (target !in skillTargets()) return
+        markFx(unit, target)
+        log += "${unit.type.name}: ${skill.name}"
+
+        when (skill.kind) {
+            SkillKind.GUARD -> {
+                val covered = units.filter {
+                    it.alive && it.team == unit.team && unit.pos.dist(it.pos) <= 1
+                }
+                covered.forEach { it.shield += 10 }
+                log += "Щит держат: ${covered.joinToString { it.type.name }}"
+            }
+
+            SkillKind.TRIP -> {
+                strike(unit, target, power(unit))
+                if (target.alive) target.apply(Status.STUN, 1)
+            }
+
+            SkillKind.VOLLEY -> strike(unit, target, power(unit) * 9 / 5)
+
+            SkillKind.FIRESTORM -> {
+                val caught = units.filter {
+                    it.alive && it.team != unit.team &&
+                        (it.id == target.id || it.pos.dist(target.pos) == 1)
+                }
+                caught.forEach { strike(unit, it, power(unit)) }
+            }
+
+            SkillKind.TONIC -> {
+                heal(unit, target, power(unit) * 3 / 2)
+                target.clearStatuses()
+            }
+
+            SkillKind.POISON_BLADE -> {
+                strike(unit, target, power(unit))
+                if (target.alive) target.apply(Status.POISON, 3)
+            }
+
+            SkillKind.SPIT -> {
+                strike(unit, target, power(unit) * 4 / 5)
+                if (target.alive) target.apply(Status.POISON, 3)
+            }
+
+            SkillKind.HOWL -> target.apply(Status.STUN, 1)
+
+            SkillKind.RIFT -> {
+                val caught = units.filter {
+                    it.alive && it.team != unit.team &&
+                        (it.id == target.id || it.pos.dist(target.pos) == 1)
+                }
+                caught.forEach { strike(unit, it, power(unit) * 6 / 5) }
+                if (target.alive) target.apply(Status.STUN, 1)
+            }
+        }
+
+        unit.cooldown = skill.cooldown
+        finishAction()
+    }
+
+    private fun markFx(from: Combatant, to: Combatant) {
+        fxAttacker = from.id
+        fxFrom = from.pos
+        fxTarget = to.pos
+        fxSeq++
+    }
+
+    private fun finishAction() {
         checkOutcome()
         if (outcome == null) endTurn()
     }
 
-    private fun damage(from: Combatant, to: Combatant, amount: Int) {
-        val dealt = amount.coerceAtLeast(1)
-        to.hp -= dealt
-        log += "${from.type.name} -> ${to.type.name}: $dealt урона"
-        if (to.hp <= 0) {
-            to.hp = 0
-            log += "${to.type.name} пал"
+    // ---- урон и лечение ------------------------------------------------
+
+    private fun heal(healer: Combatant, target: Combatant, amount: Int) {
+        val boosted = if (healer.team == Team.PLAYER && Relic.BANNER in relics) amount * 3 / 2 else amount
+        val healed = minOf(boosted, target.maxHp - target.hp)
+        target.hp += healed
+        log += "${healer.type.name}: лечение ${target.type.name} +$healed"
+    }
+
+    private fun strike(from: Combatant, to: Combatant, amount: Int) {
+        val dealt = hurt(to, amount, from.type.name)
+        val poisonous = from.team == Team.PLAYER && Relic.VIALS in relics && from.type.range >= 3
+        if (poisonous && to.alive && dealt > 0) to.apply(Status.POISON, 2)
+    }
+
+    /** Наносит урон с учётом щита, оберега и тотема. Возвращает снятое здоровье. */
+    private fun hurt(to: Combatant, amount: Int, source: String): Int {
+        var incoming = amount.coerceAtLeast(1)
+        if (to.shield > 0) {
+            val absorbed = minOf(to.shield, incoming)
+            to.shield -= absorbed
+            incoming -= absorbed
+            log += "Щит ${to.type.name} держит $absorbed"
         }
+        if (incoming <= 0) return 0
+
+        to.hp -= incoming
+        log += "$source → ${to.type.name}: $incoming урона"
+
+        if (to.hp <= 0) {
+            val saved = to.team == Team.PLAYER && Relic.TALISMAN in relics && !talismanSpent
+            if (saved) {
+                talismanSpent = true
+                to.hp = 1
+                log += "Оберег удержал ${to.type.name} на ногах"
+            } else {
+                to.hp = 0
+                to.clearStatuses()
+                to.shield = 0
+                log += "${to.type.name} пал"
+                if (to.team == Team.PLAYER && Relic.FURY in relics) {
+                    units.filter { it.alive && it.team == Team.PLAYER }.forEach { it.battleAtk += 3 }
+                    log += "Тотем ярости: отряд бьёт сильнее"
+                }
+            }
+        }
+        return incoming
     }
 
     // ---- ИИ ------------------------------------------------------------
 
-    /** Один шаг вражеского бойца: подойти и ударить. */
+    /** Один шаг вражеского бойца: способность, если готова, иначе подойти и ударить. */
     fun aiTakeTurn() {
         val me = active ?: return
         if (me.team != Team.ENEMY || outcome != null) return
@@ -218,6 +409,10 @@ class BattleState(
             return
         }
 
+        skillTargets().minByOrNull { it.hp }?.let {
+            useSkill(it)
+            return
+        }
         foes.filter { canTarget(me, it) }.minByOrNull { it.hp }?.let {
             act(it)
             return
@@ -228,6 +423,10 @@ class BattleState(
         val step = reachable().keys.minByOrNull { it.dist(prey.pos) }
         if (step != null && step.dist(prey.pos) < me.pos.dist(prey.pos)) moveActiveTo(step)
 
+        skillTargets().minByOrNull { it.hp }?.let {
+            useSkill(it)
+            return
+        }
         foes.filter { canTarget(me, it) }.minByOrNull { it.hp }?.let {
             act(it)
             return
@@ -240,7 +439,12 @@ object BattleFactory {
     const val WIDTH = 7
     const val HEIGHT = 9
 
-    fun create(party: List<Hero>, foes: List<Pair<UnitType, Int>>, rng: Random): BattleState {
+    fun create(
+        party: List<Hero>,
+        foes: List<Pair<UnitType, Int>>,
+        rng: Random,
+        relics: Set<Relic> = emptySet(),
+    ): BattleState {
         var nextId = 0
         val units = mutableListOf<Combatant>()
 
@@ -250,7 +454,7 @@ object BattleFactory {
                 type = hero.type,
                 team = Team.PLAYER,
                 maxHp = hero.maxHp,
-                attack = hero.attack,
+                baseAttack = hero.attack,
                 hp = hero.hp,
                 pos = Pos(spread(i), HEIGHT - 1 - i / WIDTH),
                 heroUid = hero.uid,
@@ -263,7 +467,7 @@ object BattleFactory {
                 type = type,
                 team = Team.ENEMY,
                 maxHp = type.maxHp + bonus,
-                attack = type.attack + bonus / 6,
+                baseAttack = type.attack + bonus / 6,
                 hp = type.maxHp + bonus,
                 pos = Pos(spread(i), i / WIDTH),
             )
@@ -276,7 +480,7 @@ object BattleFactory {
                 if (p !in taken) add(p)
             }
         }
-        return BattleState(WIDTH, HEIGHT, units, obstacles)
+        return BattleState(WIDTH, HEIGHT, units, obstacles, relics)
     }
 
     /** Расставляет бойцов от центра ряда к краям. */

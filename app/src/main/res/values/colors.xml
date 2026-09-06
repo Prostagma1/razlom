@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Фон окна и заставки: тот же тёмный, что и у игровых экранов. -->
+    <color name="ink">#FF11131A</color>
+    <color name="ember">#FFE07A3F</color>
+</resources>

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import io.github.prostagma1.razlom.game.Game
 import io.github.prostagma1.razlom.game.NodeKind
@@ -21,11 +20,10 @@ import io.github.prostagma1.razlom.ui.screens.EndScreen
 import io.github.prostagma1.razlom.ui.screens.MapScreen
 import io.github.prostagma1.razlom.ui.screens.MenuScreen
 import io.github.prostagma1.razlom.ui.screens.RewardScreen
+import io.github.prostagma1.razlom.ui.screens.ShopScreen
 
 @Composable
-fun GameApp() {
-    val game = remember { Game() }
-
+fun GameApp(game: Game) {
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         AnimatedContent(
             targetState = game.screen,
@@ -38,7 +36,11 @@ fun GameApp() {
         ) { screen ->
             Box(Modifier.fillMaxSize()) {
                 when (screen) {
-                    Screen.MENU -> MenuScreen(onStart = game::newRun)
+                    Screen.MENU -> MenuScreen(
+                        game = game,
+                        onContinue = { game.continueRun() },
+                        onStart = { game.newRun(it) },
+                    )
 
                     Screen.MAP -> MapScreen(game, onEnter = game::enterNode)
 
@@ -53,17 +55,25 @@ fun GameApp() {
                         onPick = game::takeReward,
                     )
 
+                    Screen.SHOP -> ShopScreen(
+                        game = game,
+                        onBuy = game::buy,
+                        onLeave = game::leaveShop,
+                    )
+
                     Screen.GAME_OVER -> EndScreen(
                         title = "Отряд не вернулся",
                         subtitle = "Разлом сомкнулся за вами. Следующие пойдут дальше.",
-                        onRestart = game::newRun,
+                        unlocked = game.unlocked,
+                        onRestart = { game.newRun(game.lastSquad) },
                         onMenu = game::toMenu,
                     )
 
                     Screen.RUN_WON -> EndScreen(
                         title = "Пожиратель повержен",
                         subtitle = "Отряд прошёл все восемь переходов. Попробуйте другой состав.",
-                        onRestart = game::newRun,
+                        unlocked = game.unlocked,
+                        onRestart = { game.newRun(game.lastSquad) },
                         onMenu = game::toMenu,
                     )
                 }

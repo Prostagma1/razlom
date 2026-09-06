@@ -29,6 +29,7 @@ enum class NodeKind(val label: String) {
     ELITE("Логово"),
     REST("Привал"),
     RECRUIT("Наёмники"),
+    SHOP("Лавка"),
     BOSS("Пожиратель"),
 }
 
@@ -83,9 +84,10 @@ object MapGenerator {
     private fun pickKind(row: Int, rng: Random): NodeKind = when {
         row == 1 -> NodeKind.BATTLE
         else -> when (rng.nextInt(100)) {
-            in 0..44 -> NodeKind.BATTLE
-            in 45..66 -> NodeKind.ELITE
-            in 67..84 -> NodeKind.REST
+            in 0..38 -> NodeKind.BATTLE
+            in 39..59 -> NodeKind.ELITE
+            in 60..74 -> NodeKind.REST
+            in 75..87 -> NodeKind.SHOP
             else -> NodeKind.RECRUIT
         }
     }
@@ -102,6 +104,11 @@ sealed interface Reward {
             "${type.hint}. HP ${type.maxHp}, атака ${type.attack}, дальность ${type.range}, ход ${type.move}"
     }
 
+    data class Trophy(val relic: Relic) : Reward {
+        override val title = "Реликвия: ${relic.title}"
+        override val description = relic.description
+    }
+
     data object PartyAttack : Reward {
         override val title = "Точильный камень"
         override val description = "+2 к атаке всему отряду"
@@ -115,6 +122,38 @@ sealed interface Reward {
     data object FullHeal : Reward {
         override val title = "Целебный отвар"
         override val description = "Полностью восстанавливает здоровье отряда"
+    }
+}
+
+/** Товар в лавке. Цена в золоте, заработанном за бои. */
+sealed interface ShopOffer {
+    val title: String
+    val description: String
+    val price: Int
+
+    data class Trinket(val relic: Relic) : ShopOffer {
+        override val title = relic.title
+        override val description = relic.description
+        override val price = relic.price
+    }
+
+    data class Hire(val type: UnitType) : ShopOffer {
+        override val title = "Нанять: ${type.name}"
+        override val description =
+            "${type.hint}. HP ${type.maxHp}, атака ${type.attack}, дальность ${type.range}"
+        override val price = 45
+    }
+
+    data object Mend : ShopOffer {
+        override val title = "Лекарь"
+        override val description = "Полностью лечит отряд"
+        override val price = 30
+    }
+
+    data object Whetstone : ShopOffer {
+        override val title = "Заточка"
+        override val description = "+2 к атаке всему отряду"
+        override val price = 40
     }
 }
 
@@ -136,15 +175,47 @@ object Encounters {
         }
     }
 
-    fun rewards(partySize: Int, rng: Random): List<Reward> {
+    fun goldFor(kind: NodeKind, row: Int, relics: Set<Relic>): Int {
+        val base = when (kind) {
+            NodeKind.BOSS -> 60
+            NodeKind.ELITE -> 35
+            else -> 20
+        }
+        return base + row * 3 + if (Relic.COIN in relics) 8 else 0
+    }
+
+    fun rewards(
+        partySize: Int,
+        unlocked: Set<String>,
+        owned: Set<Relic>,
+        rng: Random,
+    ): List<Reward> {
         val pool = mutableListOf<Reward>(Reward.PartyAttack, Reward.PartyHealth, Reward.FullHeal)
-        if (partySize < MAX_PARTY) {
-            pool += Reward.Recruit(Roster.recruitable.random(rng))
-            pool += Reward.Recruit(Roster.recruitable.random(rng))
+        val hires = Roster.recruitable.filter { it.id in unlocked }
+        if (partySize < MAX_PARTY && hires.isNotEmpty()) {
+            pool += Reward.Recruit(hires.random(rng))
+        }
+        (Relic.entries - owned).takeIf { it.isNotEmpty() }?.let {
+            pool += Reward.Trophy(it.random(rng))
         }
         return pool.shuffled(rng).take(3)
     }
 
-    fun recruitOffer(rng: Random): List<Reward> =
-        Roster.recruitable.shuffled(rng).take(3).map { Reward.Recruit(it) }
+    fun recruitOffer(unlocked: Set<String>, rng: Random): List<Reward> =
+        Roster.recruitable.filter { it.id in unlocked }.shuffled(rng).take(3).map { Reward.Recruit(it) }
+
+    fun shopOffers(
+        partySize: Int,
+        unlocked: Set<String>,
+        owned: Set<Relic>,
+        rng: Random,
+    ): List<ShopOffer> {
+        val offers = mutableListOf<ShopOffer>()
+        (Relic.entries - owned).shuffled(rng).take(2).forEach { offers += ShopOffer.Trinket(it) }
+        val hires = Roster.recruitable.filter { it.id in unlocked }
+        if (partySize < MAX_PARTY && hires.isNotEmpty()) offers += ShopOffer.Hire(hires.random(rng))
+        offers += ShopOffer.Mend
+        offers += ShopOffer.Whetstone
+        return offers
+    }
 }
