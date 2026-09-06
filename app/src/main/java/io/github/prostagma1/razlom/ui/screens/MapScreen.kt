@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,7 +57,7 @@ private fun glyphFor(kind: NodeKind) = when (kind) {
 }
 
 @Composable
-fun MapScreen(game: Game, onEnter: (Int) -> Unit) {
+fun MapScreen(game: Game, onEnter: (Int) -> Unit, onMenu: () -> Unit = {}) {
     val measurer = rememberTextMeasurer()
     val haptics = LocalHapticFeedback.current
     val map = game.map
@@ -90,6 +91,9 @@ fun MapScreen(game: Game, onEnter: (Int) -> Unit) {
             )
             Spacer(Modifier.width(8.dp))
             GoldTag(game.gold)
+            TextButton(onClick = onMenu) {
+                Text("Меню", style = MaterialTheme.typography.labelMedium)
+            }
         }
 
         Canvas(

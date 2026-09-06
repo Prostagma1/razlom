@@ -15,6 +15,12 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -113,6 +119,8 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     val playerTurn = active?.team == Team.PLAYER
     var inspected by remember(battle) { mutableStateOf<Int?>(null) }
     var skillMode by remember(battle) { mutableStateOf(false) }
+    var selected by remember(battle) { mutableStateOf<Int?>(null) }
+    var showLog by remember(battle) { mutableStateOf(false) }
 
     // Разведка: в начале боя поле открыто, потом опускается туман.
     var scouting by remember(battle) { mutableStateOf(true) }
@@ -127,7 +135,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     fun seen(p: Pos) = visible == null || p in visible
 
     // Режим способности не должен переезжать на следующего бойца.
-    LaunchedEffect(active?.id, battle.round) { skillMode = false }
+    LaunchedEffect(active?.id, battle.round) {
+        skillMode = false
+        selected = null
+    }
 
     // Враги ходят сами, с паузой, чтобы было видно, что происходит.
     // Это отдельный цикл на весь бой, а не эффект с ключами: ключи пересборки
@@ -178,7 +189,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(active?.id, battle.movesLeft, battle.outcome, skillMode) {
+                    .pointerInput(active?.id, battle.movesLeft, battle.outcome, skillMode, selected) {
                         detectTapGestures { tap ->
                             val cell = minOf(
                                 size.width.toFloat() / battle.width,
@@ -209,18 +220,31 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
 
                                 unit != null && battle.canTarget(active, unit) -> {
                                     inspected = null
-                                    battle.act(unit)
+                                    if (selected == unit.id) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        battle.act(unit)
+                                        selected = null
+                                    } else {
+                                        selected = unit.id
+                                    }
                                 }
 
-                                unit != null -> inspected = unit.id
+                                unit != null -> {
+                                    inspected = unit.id
+                                    selected = null
+                                }
 
                                 p in reachable -> {
                                     inspected = null
+                                    selected = null
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     battle.moveActiveTo(p)
                                 }
 
-                                else -> inspected = null
+                                else -> {
+                                    inspected = null
+                                    selected = null
+                                }
                             }
                         }
                     },
@@ -330,6 +354,14 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         drawCircle(
                             Frost.copy(alpha = 0.85f * alpha),
                             radius = radius + cell * 0.1f,
+                            center = c,
+                            style = Stroke(3f),
+                        )
+                    }
+                    if (unit.id == selected) {
+                        drawCircle(
+                            Ember.copy(alpha = 0.7f + 0.3f * pulse),
+                            radius = radius + cell * 0.16f,
                             center = c,
                             style = Stroke(3f),
                         )
@@ -444,11 +476,24 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             battle = battle,
             playerTurn = playerTurn,
             skillMode = skillMode,
+            selected = battle.units.firstOrNull { it.id == selected },
             inspected = battle.units.firstOrNull { it.id == inspected },
+            showLog = showLog,
             onClearInspect = { inspected = null },
+            onToggleLog = { showLog = !showLog },
+            onUndo = {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                battle.undoMove()
+            },
+            onAttack = { target ->
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                battle.act(target)
+                selected = null
+            },
             onSkill = {
                 val unit = battle.active ?: return@ActionPanel
                 val skill = unit.skill
+                selected = null
                 if (skill != null && skill.target == SkillTarget.SELF) {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     battle.useSkill(unit)
@@ -581,16 +626,35 @@ private fun ActionPanel(
     battle: BattleState,
     playerTurn: Boolean,
     skillMode: Boolean,
+    selected: Combatant?,
     inspected: Combatant?,
+    showLog: Boolean,
     onClearInspect: () -> Unit,
+    onToggleLog: () -> Unit,
+    onUndo: () -> Unit,
+    onAttack: (Combatant) -> Unit,
     onSkill: () -> Unit,
 ) {
     val active = battle.active
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
+        AnimatedVisibility(visible = showLog) {
+            LogPanel(battle)
+        }
+
+        AnimatedVisibility(visible = inspected != null) {
+            inspected?.let {
+                UnitCard(
+                    facts = it.facts(),
+                    onClose = onClearInspect,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+        }
+
         AnimatedContent(
             targetState = active?.id to playerTurn,
             transitionSpec = {
@@ -618,47 +682,52 @@ private fun ActionPanel(
                         style = MaterialTheme.typography.bodySmall,
                         color = Steel,
                     )
-                    if (unit.type.ability != Ability.NONE && isPlayer) {
+                }
+            }
+        }
+
+        // Расчёт удара по выбранной цели: бьём только вторым нажатием.
+        val forecast = selected?.let { battle.forecast(it, withSkill = false) }
+        AnimatedVisibility(visible = selected != null && forecast != null) {
+            if (selected != null && forecast != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(InkRaised)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            abilityHint(unit.type.ability),
-                            style = MaterialTheme.typography.labelSmall,
+                            "${selected.type.name} · ${selected.hp}/${selected.maxHp}",
+                            style = MaterialTheme.typography.labelLarge,
                             color = Bone,
                         )
+                        Text(
+                            forecastText(forecast),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = when {
+                                forecast.healing -> Moss
+                                forecast.lethal -> Ember
+                                else -> Steel
+                            },
+                            fontWeight = if (forecast.lethal) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onAttack(selected) },
+                        enabled = playerTurn && battle.outcome == null,
+                    ) {
+                        Text(if (forecast.healing) "Лечить" else "Ударить")
                     }
                 }
             }
         }
 
         Spacer(Modifier.height(8.dp))
-
-        Box(Modifier.height(34.dp)) {
-            androidx.compose.animation.AnimatedVisibility(
-                visible = inspected != null,
-                enter = fadeIn(tween(180)) + slideInVertically { it / 2 },
-                exit = fadeOut(tween(120)),
-            ) {
-                inspected?.let { unit ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(InkRaised)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "${unit.type.name}: ${unit.hp}/${unit.maxHp} · ⚔${unit.attack} · " +
-                                "дальность ${unit.type.range} · ход ${unit.type.move}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Bone,
-                        )
-                        Spacer(Modifier.padding(horizontal = 4.dp))
-                        TextButton(onClick = onClearInspect) { Text("×") }
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val skill = active?.skill
             if (skill != null) {
@@ -680,6 +749,15 @@ private fun ActionPanel(
                     )
                 }
             }
+            if (playerTurn && battle.canUndoMove) {
+                Button(
+                    onClick = onUndo,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = Bone,
+                    ),
+                ) { Text("↶ Вернуть") }
+            }
             Button(
                 onClick = { battle.endTurn() },
                 enabled = playerTurn && battle.outcome == null,
@@ -690,7 +768,7 @@ private fun ActionPanel(
             ) { Text("Конец хода") }
         }
 
-        if (playerTurn && active?.skill != null && active.skillReady) {
+        if (playerTurn && skillMode && active?.skill != null) {
             Text(
                 active.skill!!.description,
                 style = MaterialTheme.typography.labelSmall,
@@ -699,20 +777,74 @@ private fun ActionPanel(
             )
         }
 
-        Spacer(Modifier.height(6.dp))
-        Box(Modifier.height(30.dp)) {
-            Column {
-                battle.log.takeLast(2).forEach { line ->
-                    key(line) {
-                        Text(
-                            line,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Steel,
-                        )
-                    }
-                }
-            }
+        // Последняя строка журнала, по нажатию — весь журнал.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onToggleLog)
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                battle.log.lastOrNull().orEmpty(),
+                style = MaterialTheme.typography.labelSmall,
+                color = Steel,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                if (showLog) "журнал ▴" else "журнал ▾",
+                style = MaterialTheme.typography.labelSmall,
+                color = Ember,
+            )
         }
+    }
+}
+
+/** Весь журнал боя: прокручивается, свежие записи внизу. */
+@Composable
+private fun LogPanel(battle: BattleState) {
+    val state = rememberLazyListState()
+    LaunchedEffect(battle.log.size) {
+        if (battle.log.isNotEmpty()) state.animateScrollToItem(battle.log.lastIndex)
+    }
+
+    LazyColumn(
+        state = state,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(InkRaised)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        items(battle.log.toList()) { line ->
+            val isRound = line.startsWith("—")
+            Text(
+                line,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isRound) Ember else Steel,
+                fontWeight = if (isRound) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier.padding(vertical = 1.dp),
+            )
+        }
+    }
+}
+
+private fun forecastText(f: BattleState.Forecast): String = buildString {
+    if (f.healing) {
+        append("вылечит на ${f.amount}")
+        if (f.extra.isNotEmpty()) append(" · ${f.extra}")
+    } else {
+        if (f.absorbed > 0) append("щит съест ${f.absorbed} · ")
+        append("−${f.amount} HP")
+        append(if (f.lethal) " · СМЕРТЕЛЬНО" else " · останется ${f.remaining}")
+        if (f.splash > 0) append(" · соседям −${f.splash}")
+        if (f.extra.isNotEmpty()) append(" · ${f.extra}")
     }
 }
 

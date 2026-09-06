@@ -110,6 +110,12 @@ class Game(
         screen = Screen.MENU
     }
 
+    /** Выйти в меню посреди забега: состояние остаётся на диске. */
+    fun exitToMenu() {
+        save()
+        screen = Screen.MENU
+    }
+
     fun enterNode(nodeId: Int) {
         val node = map.nodes[nodeId] ?: return
         if (nodeId !in available) return

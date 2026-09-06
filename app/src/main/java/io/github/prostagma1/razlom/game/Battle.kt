@@ -46,6 +46,22 @@ class BattleState(
     internal var talismanSpent = false
         private set
 
+    /** Откуда боец начал ход — чтобы можно было вернуть его на место. */
+    private var turnStart by mutableStateOf<Pos?>(null)
+    private var turnStartMoves by mutableIntStateOf(0)
+
+    /** Есть ли что отменять: боец сдвинулся, но ещё не ударил. */
+    val canUndoMove: Boolean
+        get() = active?.let { turnStart != null && it.pos != turnStart } == true
+
+    /** Возвращает бойца туда, откуда он пошёл, и отдаёт потраченные шаги. */
+    fun undoMove() {
+        val unit = active ?: return
+        val start = turnStart ?: return
+        unit.pos = start
+        movesLeft = turnStartMoves
+    }
+
     /** Очередь как список идентификаторов — для сохранения. */
     internal val queueIds: List<Int> get() = queue.toList()
 
@@ -72,6 +88,9 @@ class BattleState(
             queue.addAll(restore.queue)
             movesLeft = restore.movesLeft
             talismanSpent = restore.talismanSpent
+            // Из сохранения отменять нечего: ход начался ещё до записи.
+            turnStart = active?.pos
+            turnStartMoves = restore.movesLeft
             checkOutcome()
         } else {
             if (Relic.STONE_SKIN in relics) {
@@ -158,6 +177,7 @@ class BattleState(
         }
         if (queue.isEmpty()) {
             round++
+            log += "— Раунд $round —"
             fillQueue()
         }
     }
@@ -193,6 +213,8 @@ class BattleState(
 
             if (unit.cooldown > 0) unit.cooldown--
             movesLeft = unit.type.move + if (unit.team == Team.PLAYER && Relic.BOOTS in relics) 1 else 0
+            turnStart = unit.pos
+            turnStartMoves = movesLeft
             return
         }
         checkOutcome()
@@ -287,6 +309,37 @@ class BattleState(
         return unit.attack + if (warStone) 3 else 0
     }
 
+    /**
+     * Сколько придётся по главной цели обычной атакой. Одна формула и для
+     * удара, и для предпросмотра — иначе цифры на экране разойдутся с боем.
+     */
+    private fun mainAmount(attacker: Combatant, target: Combatant): Int =
+        when (attacker.type.ability) {
+            Ability.FLANK -> {
+                val supported = units.any {
+                    it.alive && it.team == attacker.team && it.id != attacker.id &&
+                        it.pos.reach(target.pos) == 1
+                }
+                if (supported) power(attacker) * 3 / 2 else power(attacker)
+            }
+
+            else -> power(attacker)
+        }
+
+    /** Сколько придётся по главной цели способностью. */
+    private fun skillAmount(unit: Combatant, kind: SkillKind): Int = when (kind) {
+        SkillKind.VOLLEY -> power(unit) * 9 / 5
+        SkillKind.SPIT -> power(unit) * 4 / 5
+        SkillKind.RIFT -> power(unit) * 6 / 5
+        SkillKind.TONIC -> power(unit) * 3 / 2
+        SkillKind.TRIP, SkillKind.POISON_BLADE, SkillKind.FIRESTORM -> power(unit)
+        SkillKind.GUARD, SkillKind.HOWL -> 0
+    }
+
+    /** Лечение с учётом знамени. */
+    private fun healAmount(healer: Combatant, raw: Int): Int =
+        if (healer.team == Team.PLAYER && Relic.BANNER in relics) raw * 3 / 2 else raw
+
     fun canTarget(attacker: Combatant, target: Combatant): Boolean {
         if (!target.alive || attacker.pos.reach(target.pos) > attacker.type.range) return false
         return if (attacker.type.ability == Ability.HEAL) {
@@ -298,40 +351,113 @@ class BattleState(
         }
     }
 
+    /** Что случится с целью, если ударить прямо сейчас. */
+    data class Forecast(
+        val healing: Boolean,
+        /** Сколько снимет здоровья (или вылечит) после щита. */
+        val amount: Int,
+        /** Сколько съест щит цели. */
+        val absorbed: Int,
+        /** Здоровье цели после удара. */
+        val remaining: Int,
+        val lethal: Boolean,
+        /** Сколько достанется каждому соседу цели, 0 — если никого не заденет. */
+        val splash: Int,
+        /** Что ещё повесит удар: яд, оглушение. */
+        val extra: String,
+    )
+
+    /**
+     * Предпросмотр удара активного бойца по цели. Считает по тем же формулам,
+     * что и настоящий удар, поэтому цифры на экране не врут.
+     */
+    fun forecast(target: Combatant, withSkill: Boolean = false): Forecast? {
+        val unit = active ?: return null
+        val skill = unit.skill
+
+        val raw: Int
+        val healing: Boolean
+        val splash: Int
+        val extra: String
+
+        if (withSkill && skill != null) {
+            raw = skillAmount(unit, skill.kind)
+            healing = skill.kind == SkillKind.TONIC
+            splash = when (skill.kind) {
+                SkillKind.FIRESTORM, SkillKind.RIFT -> raw
+                else -> 0
+            }
+            extra = when (skill.kind) {
+                SkillKind.TRIP, SkillKind.RIFT -> "оглушение"
+                SkillKind.POISON_BLADE, SkillKind.SPIT -> "яд"
+                SkillKind.GUARD -> "щит 10"
+                SkillKind.HOWL -> "оглушение"
+                SkillKind.TONIC -> "снимет яд и оглушение"
+                else -> ""
+            }
+        } else {
+            raw = mainAmount(unit, target)
+            healing = unit.type.ability == Ability.HEAL
+            splash = if (unit.type.ability == Ability.SPLASH) raw / 2 else 0
+            extra = if (
+                unit.team == Team.PLAYER && Relic.VIALS in relics && unit.type.range >= 3
+            ) {
+                "яд от склянок"
+            } else {
+                ""
+            }
+        }
+
+        if (healing) {
+            val healed = minOf(healAmount(unit, raw), target.maxHp - target.hp)
+            return Forecast(true, healed, 0, target.hp + healed, false, 0, extra)
+        }
+
+        val incoming = raw.coerceAtLeast(1)
+        val absorbed = minOf(target.shield, incoming)
+        val toHealth = incoming - absorbed
+        val remaining = (target.hp - toHealth).coerceAtLeast(0)
+        val saved = target.team == Team.PLAYER && Relic.TALISMAN in relics && !talismanSpent
+        return Forecast(
+            healing = false,
+            amount = toHealth,
+            absorbed = absorbed,
+            remaining = if (remaining == 0 && saved) 1 else remaining,
+            lethal = remaining == 0 && !saved,
+            splash = splash,
+            extra = extra,
+        )
+    }
+
     /** Проводит атаку (или лечение) и завершает ход бойца. */
     fun act(target: Combatant) {
         val attacker = active ?: return
         if (!canTarget(attacker, target)) return
         markFx(attacker, target)
 
+        val amount = mainAmount(attacker, target)
         when (attacker.type.ability) {
-            Ability.HEAL -> heal(attacker, target, power(attacker))
+            Ability.HEAL -> heal(attacker, target, amount)
 
             Ability.SPLASH -> {
-                strike(attacker, target, power(attacker))
+                strike(attacker, target, amount)
                 neighboursOf(target, attacker.team).forEach {
-                    strike(attacker, it, power(attacker) / 2)
+                    strike(attacker, it, amount / 2)
                 }
             }
 
-            Ability.FLANK -> {
-                val supported = units.any {
-                    it.alive && it.team == attacker.team && it.id != attacker.id &&
-                        it.pos.reach(target.pos) == 1
-                }
-                strike(attacker, target, if (supported) power(attacker) * 3 / 2 else power(attacker))
-            }
+            Ability.FLANK -> strike(attacker, target, amount)
 
             Ability.PIERCE -> {
-                strike(attacker, target, power(attacker))
+                strike(attacker, target, amount)
                 val dx = (target.pos.x - attacker.pos.x).coerceIn(-1, 1)
                 val dy = (target.pos.y - attacker.pos.y).coerceIn(-1, 1)
                 unitAt(Pos(target.pos.x + dx, target.pos.y + dy))
                     ?.takeIf { it.team != attacker.team }
-                    ?.let { strike(attacker, it, power(attacker) / 2) }
+                    ?.let { strike(attacker, it, amount / 2) }
             }
 
-            Ability.NONE -> strike(attacker, target, power(attacker))
+            Ability.NONE -> strike(attacker, target, amount)
         }
 
         finishAction()
@@ -379,30 +505,30 @@ class BattleState(
             }
 
             SkillKind.TRIP -> {
-                strike(unit, target, power(unit))
+                strike(unit, target, skillAmount(unit, skill.kind))
                 if (target.alive) target.apply(Status.STUN, 1)
             }
 
-            SkillKind.VOLLEY -> strike(unit, target, power(unit) * 9 / 5)
+            SkillKind.VOLLEY -> strike(unit, target, skillAmount(unit, skill.kind))
 
             SkillKind.FIRESTORM -> {
                 (listOf(target) + neighboursOf(target, unit.team)).forEach {
-                    strike(unit, it, power(unit))
+                    strike(unit, it, skillAmount(unit, skill.kind))
                 }
             }
 
             SkillKind.TONIC -> {
-                heal(unit, target, power(unit) * 3 / 2)
+                heal(unit, target, skillAmount(unit, skill.kind))
                 target.clearStatuses()
             }
 
             SkillKind.POISON_BLADE -> {
-                strike(unit, target, power(unit))
+                strike(unit, target, skillAmount(unit, skill.kind))
                 if (target.alive) target.apply(Status.POISON, 3)
             }
 
             SkillKind.SPIT -> {
-                strike(unit, target, power(unit) * 4 / 5)
+                strike(unit, target, skillAmount(unit, skill.kind))
                 if (target.alive) target.apply(Status.POISON, 3)
             }
 
@@ -410,7 +536,7 @@ class BattleState(
 
             SkillKind.RIFT -> {
                 (listOf(target) + neighboursOf(target, unit.team)).forEach {
-                    strike(unit, it, power(unit) * 6 / 5)
+                    strike(unit, it, skillAmount(unit, skill.kind))
                 }
                 if (target.alive) target.apply(Status.STUN, 1)
             }
@@ -435,8 +561,7 @@ class BattleState(
     // ---- урон и лечение ------------------------------------------------
 
     private fun heal(healer: Combatant, target: Combatant, amount: Int) {
-        val boosted = if (healer.team == Team.PLAYER && Relic.BANNER in relics) amount * 3 / 2 else amount
-        val healed = minOf(boosted, target.maxHp - target.hp)
+        val healed = minOf(healAmount(healer, amount), target.maxHp - target.hp)
         target.hp += healed
         log += "${healer.type.name}: лечение ${target.type.name} +$healed"
     }
