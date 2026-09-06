@@ -1,10 +1,13 @@
 package io.github.prostagma1.razlom.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,7 +84,7 @@ fun UnitCard(facts: UnitFacts, onClose: (() -> Unit)? = null, modifier: Modifier
             .padding(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(tint, facts.type.glyph)
+            Portrait(tint, facts.type.id)
             Spacer(Modifier.size(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(facts.type.name, style = MaterialTheme.typography.titleSmall, color = Bone)
@@ -150,15 +154,23 @@ fun UnitCard(facts: UnitFacts, onClose: (() -> Unit)? = null, modifier: Modifier
 }
 
 @Composable
-private fun Box(color: androidx.compose.ui.graphics.Color, glyph: String) {
-    androidx.compose.foundation.layout.Box(
+private fun Portrait(color: androidx.compose.ui.graphics.Color, typeId: String) {
+    Box(
         Modifier
-            .size(36.dp)
+            .size(44.dp)
             .clip(CircleShape)
-            .background(color),
+            .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, color = Ink, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Canvas(Modifier.fillMaxSize()) {
+            drawFighter(
+                id = typeId,
+                center = Offset(size.width / 2f, size.height / 2f),
+                size = size.minDimension * 0.95f,
+                body = color,
+                alpha = 1f,
+            )
+        }
     }
 }
 
