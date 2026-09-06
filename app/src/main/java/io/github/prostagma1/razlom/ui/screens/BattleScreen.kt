@@ -15,12 +15,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
-import kotlin.math.sin
-import kotlin.math.cos
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -103,25 +97,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     val measurer = rememberTextMeasurer()
     val haptics = LocalHapticFeedback.current
 
-    val fx = remember(battle) { BattleFx() }
-    val ground = rememberGround(seed = battle.terrain.hashCode())
-
-    // Один цикл на весь бой двигает частицы; отрисовка подписана на счётчик.
-    LaunchedEffect(battle) {
-        var last = 0L
-        while (true) {
-            withFrameNanos { now ->
-                val dt = if (last == 0L) 0.016f else ((now - last) / 1_000_000_000f).coerceIn(0f, 0.05f)
-                last = now
-                fx.sparks.update(dt, battle.width, battle.height, Ember)
-            }
-        }
-    }
-
     val anims = remember(battle) { mutableMapOf<Int, UnitAnim>() }
     battle.units.forEach { anims.getOrPut(it.id) { UnitAnim(it.pos) } }
     battle.units.forEach { unit ->
-        key(unit.id) { UnitAnimator(unit, anims.getValue(unit.id), haptics, fx) }
+        key(unit.id) { UnitAnimator(unit, anims.getValue(unit.id), haptics) }
     }
 
     // Выпад атакующего в сторону цели.
@@ -202,13 +181,6 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                 .fillMaxWidth()
                 .weight(1f)
                 .padding(horizontal = 10.dp, vertical = 6.dp)
-                .graphicsLayer {
-                    val s = fx.shake.value
-                    if (s > 0f) {
-                        translationX = sin(s * 42f) * 14f * s
-                        translationY = cos(s * 31f) * 9f * s
-                    }
-                }
                 .clip(RoundedCornerShape(16.dp))
                 .background(
                     Brush.verticalGradient(listOf(Color(0xFF161B24), Color(0xFF0D1015))),
@@ -306,30 +278,12 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                 fun cellTopLeft(p: Pos) = Offset(ox + p.x * cell, oy + p.y * cell)
                 fun centerOf(o: Offset) = Offset(ox + (o.x + 0.5f) * cell, oy + (o.y + 0.5f) * cell)
 
-                // Пол одним проходом, поверх него — испечённый шум.
-                for (y in 0 until battle.height) {
-                    for (x in 0 until battle.width) {
-                        val p = Pos(x, y)
-                        drawRect(
-                            if ((x + y) % 2 == 0) Field.cell else Field.cellAlt,
-                            cellTopLeft(p),
-                            Size(cell, cell),
-                        )
-                    }
-                }
-                drawImage(
-                    image = ground,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(ground.width, ground.height),
-                    dstOffset = IntOffset(ox.toInt(), oy.toInt()),
-                    dstSize = IntSize((cell * battle.width).toInt(), (cell * battle.height).toInt()),
-                    alpha = 0.75f,
-                )
-
                 for (y in 0 until battle.height) {
                     for (x in 0 until battle.width) {
                         val p = Pos(x, y)
                         val tl = cellTopLeft(p)
+                        val ground = if ((x + y) % 2 == 0) Field.cell else Field.cellAlt
+                        drawRect(ground, tl, Size(cell, cell))
 
                         when (battle.terrain[p]) {
                             Terrain.ROCK -> {
@@ -403,41 +357,13 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                     val tinted = lerp(body, Color.White, anim.flash.value)
                     val radius = cell * 0.36f * anim.punch.value * (0.6f + 0.4f * alpha)
 
-                    // Тень на земле, чтобы фигура не висела в воздухе.
-                    drawOval(
-                        Color.Black.copy(alpha = 0.32f * alpha),
-                        topLeft = Offset(c.x - radius * 0.85f, c.y + radius * 0.55f),
-                        size = Size(radius * 1.7f, radius * 0.5f),
+                    // Тень под фигурой, чтобы читалась глубина.
+                    drawCircle(
+                        Color.Black.copy(alpha = 0.35f * alpha),
+                        radius = radius,
+                        center = c + Offset(0f, cell * 0.06f),
                     )
-                    // Тёплый отсвет вокруг своих: они несут свет в тумане.
-                    if (unit.team == Team.PLAYER) {
-                        drawCircle(
-                            brush = Brush.radialGradient(
-                                listOf(Ember.copy(alpha = 0.16f * alpha), Color.Transparent),
-                                center = c,
-                                radius = cell * 1.6f,
-                            ),
-                            radius = cell * 1.6f,
-                            center = c,
-                        )
-                    }
-                    // Сначала контур на размер больше, потом сама фигура:
-                    // без этого силуэт растворяется в текстуре земли.
-                    drawFighter(
-                        id = unit.type.id,
-                        center = c,
-                        size = radius * 2.62f,
-                        body = tinted,
-                        alpha = alpha,
-                        flat = Color.Black.copy(alpha = 0.55f * alpha),
-                    )
-                    drawFighter(
-                        id = unit.type.id,
-                        center = c,
-                        size = radius * 2.4f,
-                        body = tinted,
-                        alpha = alpha,
-                    )
+                    drawCircle(tinted.copy(alpha = alpha), radius = radius, center = c)
 
                     if (unit.id == active?.id && battle.outcome == null) {
                         drawCircle(
@@ -466,6 +392,16 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                     if (unit.id == inspected) {
                         drawCircle(Bone.copy(alpha = 0.8f * alpha), radius = radius + cell * 0.13f, center = c, style = Stroke(2f))
                     }
+
+                    val glyph = measurer.measure(
+                        unit.type.glyph,
+                        TextStyle(color = Ink.copy(alpha = alpha), fontSize = (cell * 0.30f).toSp(), fontWeight = FontWeight.Bold),
+                    )
+                    drawText(
+                        glyph,
+                        topLeft = Offset(c.x - glyph.size.width / 2f, c.y - glyph.size.height / 2f),
+                        color = Color.Unspecified,
+                    )
 
                     // Значки статусов над фигурой.
                     val marks = Status.entries.filter { unit.has(it) }
@@ -527,56 +463,17 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                     }
                 }
 
-                // Искры, пыль и угольки.
-                fx.sparks.tick
-                fx.sparks.snapshot().forEach { particle ->
-                    val fade = (particle.life / particle.maxLife).coerceIn(0f, 1f)
-                    drawCircle(
-                        particle.color.copy(alpha = particle.color.alpha * fade),
-                        radius = particle.size * cell * (0.5f + fade * 0.5f),
-                        center = centerOf(Offset(particle.x, particle.y)),
-                    )
-                }
-
-                // Туман: каждая скрытая клетка гасится мягким пятном. Пятна
-                // перекрываются, поэтому тьма сплошная, а её край размыт.
-                // Намеренно без blend-режимов: ошибка в них означала бы
-                // полностью чёрную доску.
+                // Туман поверх всего: скрытые клетки гаснут вместе с тем, что на них.
                 visible?.let { seenCells ->
                     for (y in 0 until battle.height) {
                         for (x in 0 until battle.width) {
                             val p = Pos(x, y)
-                            if (p in seenCells) continue
-                            val dim = centerOf(Offset(p.x.toFloat(), p.y.toFloat()))
-                            val r = cell * 0.95f
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colorStops = arrayOf(
-                                        0f to Field.fog.copy(alpha = 0.82f),
-                                        0.55f to Field.fog.copy(alpha = 0.8f),
-                                        1f to Color.Transparent,
-                                    ),
-                                    center = dim,
-                                    radius = r,
-                                ),
-                                radius = r,
-                                center = dim,
-                            )
+                            if (p !in seenCells) {
+                                drawRect(Field.fog.copy(alpha = 0.9f), cellTopLeft(p), Size(cell, cell))
+                            }
                         }
                     }
                 }
-
-                // Виньетка: углы уходят в темноту, взгляд держится центра.
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colorStops = arrayOf(
-                            0.55f to Color.Transparent,
-                            1f to Color.Black.copy(alpha = 0.55f),
-                        ),
-                        center = Offset(size.width / 2f, size.height / 2f),
-                        radius = maxOf(size.width, size.height) * 0.72f,
-                    ),
-                )
             }
 
             androidx.compose.animation.AnimatedVisibility(
@@ -657,17 +554,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
 
 /** Держит анимации одного бойца в согласии с игровой моделью. */
 @Composable
-private fun UnitAnimator(
-    unit: Combatant,
-    anim: UnitAnim,
-    haptics: HapticFeedback,
-    fx: BattleFx,
-) {
+private fun UnitAnimator(unit: Combatant, anim: UnitAnim, haptics: HapticFeedback) {
     LaunchedEffect(unit.pos) {
         val target = unit.pos.toOffset()
         if (anim.cell.value != target) {
-            // Пыль вылетает оттуда, откуда боец шагнул.
-            fx.sparks.dust(anim.cell.value.x, anim.cell.value.y, Steel.copy(alpha = 0.5f))
             anim.cell.animateTo(target, tween(260, easing = FastOutSlowInEasing))
         }
     }
@@ -683,15 +573,6 @@ private fun UnitAnimator(
         }
         if (unit.hp < previous) {
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            val hurt = (previous - unit.hp).toFloat()
-            fx.sparks.burst(
-                x = anim.cell.value.x,
-                y = anim.cell.value.y,
-                count = (6 + hurt).toInt().coerceAtMost(22),
-                color = if (unit.team == Team.PLAYER) Blood else Ember,
-                speed = 1.6f,
-            )
-            launch { fx.kick((hurt / 18f).coerceIn(0.25f, 1f)) }
             launch {
                 anim.flash.snapTo(1f)
                 anim.flash.animateTo(0f, tween(340))
@@ -703,18 +584,7 @@ private fun UnitAnimator(
         }
     }
     LaunchedEffect(unit.alive) {
-        if (!unit.alive) {
-            fx.sparks.burst(
-                x = anim.cell.value.x,
-                y = anim.cell.value.y,
-                count = 26,
-                color = if (unit.team == Team.PLAYER) Blood else Ember,
-                speed = 2.4f,
-                life = 0.8f,
-            )
-            launch { fx.kick(1f) }
-            anim.fade.animateTo(0f, tween(450))
-        }
+        if (!unit.alive) anim.fade.animateTo(0f, tween(450))
     }
 }
 
@@ -763,20 +633,17 @@ private fun TurnOrderStrip(battle: BattleState) {
                 modifier = Modifier
                     .animateItem()
                     .scale(if (isActive) 1f else 0.82f)
-                    .size(36.dp)
+                    .size(34.dp)
                     .clip(CircleShape)
-                    .background(InkRaised),
+                    .background(tint),
                 contentAlignment = Alignment.Center,
             ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    drawFighter(
-                        id = unit.type.id,
-                        center = Offset(size.width / 2f, size.height / 2f),
-                        size = size.minDimension * 0.95f,
-                        body = tint,
-                        alpha = 1f,
-                    )
-                }
+                Text(
+                    unit.type.glyph,
+                    color = Ink,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                )
             }
         }
     }
