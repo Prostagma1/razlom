@@ -130,10 +130,18 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     LaunchedEffect(active?.id, battle.round) { skillMode = false }
 
     // Враги ходят сами, с паузой, чтобы было видно, что происходит.
-    LaunchedEffect(active?.id, battle.outcome, battle.round) {
-        if (battle.outcome == null && active != null && active.team == Team.ENEMY) {
-            delay(620)
-            battle.aiTakeTurn()
+    // Это отдельный цикл на весь бой, а не эффект с ключами: ключи пересборки
+    // могут не смениться между двумя ходами, и тогда враг не пойдёт никогда.
+    LaunchedEffect(battle) {
+        while (true) {
+            val actor = battle.active
+            if (battle.outcome == null && actor != null && actor.team == Team.ENEMY) {
+                delay(620)
+                // За время паузы ход мог уйти дальше — проверяем, что он всё ещё чей надо.
+                if (battle.outcome == null && battle.active?.id == actor.id) battle.aiTakeTurn()
+            } else {
+                delay(100)
+            }
         }
     }
 
@@ -170,7 +178,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(active?.id, battle.movesLeft, battle.outcome) {
+                    .pointerInput(active?.id, battle.movesLeft, battle.outcome, skillMode) {
                         detectTapGestures { tap ->
                             val cell = minOf(
                                 size.width.toFloat() / battle.width,
