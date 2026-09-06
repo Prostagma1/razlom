@@ -189,8 +189,9 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(active?.id, battle.movesLeft, battle.outcome, skillMode, selected) {
-                        detectTapGestures { tap ->
+                    .pointerInput(active?.id, battle.movesLeft, battle.outcome, skillMode) {
+                        // Клетка под пальцем, или null — если ткнули мимо доски.
+                        fun cellAt(tap: Offset): Pos? {
                             val cell = minOf(
                                 size.width.toFloat() / battle.width,
                                 size.height.toFloat() / battle.height,
@@ -202,51 +203,73 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                             if (tap.x < ox || tap.y < oy ||
                                 gx !in 0 until battle.width || gy !in 0 until battle.height
                             ) {
-                                return@detectTapGestures
+                                return null
                             }
-                            val p = Pos(gx, gy)
-                            val unit = battle.unitAt(p)
-                            when {
-                                battle.outcome != null || !playerTurn -> inspected = unit?.id
-
-                                skillMode -> {
-                                    val aim = skillAims.firstOrNull { it.pos == p }
-                                    if (aim != null) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        battle.useSkill(aim)
-                                    }
-                                    skillMode = false
-                                }
-
-                                unit != null && battle.canTarget(active, unit) -> {
-                                    inspected = null
-                                    if (selected == unit.id) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        battle.act(unit)
-                                        selected = null
-                                    } else {
-                                        selected = unit.id
-                                    }
-                                }
-
-                                unit != null -> {
-                                    inspected = unit.id
-                                    selected = null
-                                }
-
-                                p in reachable -> {
-                                    inspected = null
-                                    selected = null
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    battle.moveActiveTo(p)
-                                }
-
-                                else -> {
-                                    inspected = null
-                                    selected = null
-                                }
-                            }
+                            return Pos(gx, gy)
                         }
+
+                        detectTapGestures(
+                            // Долгий тап ничего не тратит: показывает расчёт и карточку.
+                            onLongPress = { tap ->
+                                val unit = cellAt(tap)?.let { battle.unitAt(it) }
+                                if (unit == null) {
+                                    inspected = null
+                                    selected = null
+                                    return@detectTapGestures
+                                }
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                inspected = unit.id
+                                val aimable = playerTurn && battle.outcome == null && (
+                                    if (skillMode) {
+                                        skillAims.any { it.id == unit.id }
+                                    } else {
+                                        active != null && battle.canTarget(active, unit)
+                                    }
+                                    )
+                                selected = if (aimable) unit.id else null
+                            },
+                            onTap = { tap ->
+                                val p = cellAt(tap) ?: return@detectTapGestures
+                                val unit = battle.unitAt(p)
+                                when {
+                                    battle.outcome != null || !playerTurn -> inspected = unit?.id
+
+                                    skillMode -> {
+                                        val aim = skillAims.firstOrNull { it.pos == p }
+                                        if (aim != null) {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            battle.useSkill(aim)
+                                        }
+                                        skillMode = false
+                                        selected = null
+                                    }
+
+                                    unit != null && battle.canTarget(active, unit) -> {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        inspected = null
+                                        selected = null
+                                        battle.act(unit)
+                                    }
+
+                                    unit != null -> {
+                                        inspected = unit.id
+                                        selected = null
+                                    }
+
+                                    p in reachable -> {
+                                        inspected = null
+                                        selected = null
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        battle.moveActiveTo(p)
+                                    }
+
+                                    else -> {
+                                        inspected = null
+                                        selected = null
+                                    }
+                                }
+                            },
+                        )
                     },
             ) {
                 val cell = minOf(size.width / battle.width, size.height / battle.height)
@@ -487,7 +510,12 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             },
             onAttack = { target ->
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                battle.act(target)
+                if (skillMode) {
+                    battle.useSkill(target)
+                    skillMode = false
+                } else {
+                    battle.act(target)
+                }
                 selected = null
             },
             onSkill = {
@@ -686,8 +714,8 @@ private fun ActionPanel(
             }
         }
 
-        // Расчёт удара по выбранной цели: бьём только вторым нажатием.
-        val forecast = selected?.let { battle.forecast(it, withSkill = false) }
+        // Расчёт по цели, которую подержали пальцем.
+        val forecast = selected?.let { battle.forecast(it, withSkill = skillMode) }
         AnimatedVisibility(visible = selected != null && forecast != null) {
             if (selected != null && forecast != null) {
                 Row(
@@ -721,10 +749,26 @@ private fun ActionPanel(
                         onClick = { onAttack(selected) },
                         enabled = playerTurn && battle.outcome == null,
                     ) {
-                        Text(if (forecast.healing) "Лечить" else "Ударить")
+                        Text(
+                            when {
+                                skillMode -> active?.skill?.name ?: "Применить"
+                                forecast.healing -> "Лечить"
+                                else -> "Ударить"
+                            },
+                        )
                     }
                 }
             }
+        }
+
+        // Долгий тап никак не виден сам по себе — подсказываем, пока им не пользуются.
+        if (playerTurn && selected == null && battle.outcome == null) {
+            Text(
+                "Удержите бойца пальцем — покажу расчёт удара и карточку",
+                style = MaterialTheme.typography.labelSmall,
+                color = Steel.copy(alpha = 0.8f),
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
 
         Spacer(Modifier.height(8.dp))
