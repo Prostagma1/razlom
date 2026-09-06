@@ -22,7 +22,7 @@ class StatusAndSkillTest {
     fun `яд бьёт в начале хода и через три хода спадает`() {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(4, 4))
-        val battle = BattleState(6, 6, listOf(hero, foe), emptySet())
+        val battle = BattleState(6, 6, listOf(hero, foe), emptyMap())
 
         hero.apply(Status.POISON, 2)
         val before = hero.hp
@@ -39,7 +39,7 @@ class StatusAndSkillTest {
         val fast = fighter(0, Roster.RAZBOYNIK, Team.PLAYER, Pos(0, 0))
         val slow = fighter(1, Roster.LATNIK, Team.PLAYER, Pos(1, 0))
         val foe = fighter(2, Roster.SPITTER, Team.ENEMY, Pos(5, 5))
-        val battle = BattleState(6, 6, listOf(fast, slow, foe), emptySet())
+        val battle = BattleState(6, 6, listOf(fast, slow, foe), emptyMap())
 
         assertEquals(fast.id, battle.active?.id)
         slow.apply(Status.STUN, 1)
@@ -54,7 +54,7 @@ class StatusAndSkillTest {
     fun `подсечка копейщика оглушает и уходит на перезарядку`() {
         val spear = fighter(0, Roster.KOPEYSHCHIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(2, 0))
-        val battle = BattleState(6, 6, listOf(spear, foe), emptySet())
+        val battle = BattleState(6, 6, listOf(spear, foe), emptyMap())
 
         assertTrue(foe in battle.skillTargets())
         battle.useSkill(foe)
@@ -73,7 +73,7 @@ class StatusAndSkillTest {
         val foe = fighter(2, Roster.SPITTER, Team.ENEMY, Pos(5, 5))
         wounded.hp = 5
         wounded.apply(Status.POISON, 3)
-        val battle = BattleState(6, 6, listOf(healer, wounded, foe), emptySet())
+        val battle = BattleState(6, 6, listOf(healer, wounded, foe), emptyMap())
 
         battle.useSkill(wounded)
 
@@ -86,7 +86,7 @@ class StatusAndSkillTest {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(1, 0))
         hero.shield = 100
-        val battle = BattleState(6, 6, listOf(hero, foe), emptySet())
+        val battle = BattleState(6, 6, listOf(hero, foe), emptyMap())
 
         battle.act(foe) // ходит латник — он быстрее
         battle.aiTakeTurn() // плевун отвечает
@@ -99,7 +99,7 @@ class StatusAndSkillTest {
     fun `каменная кожа даёт щит только отряду игрока`() {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.GHOUL, Team.ENEMY, Pos(5, 5))
-        BattleState(6, 6, listOf(hero, foe), emptySet(), setOf(Relic.STONE_SKIN))
+        BattleState(6, 6, listOf(hero, foe), emptyMap(), setOf(Relic.STONE_SKIN))
 
         assertEquals(5, hero.shield)
         assertEquals(0, foe.shield)
@@ -110,7 +110,7 @@ class StatusAndSkillTest {
         val hero = fighter(0, Roster.LUCHNIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.GHOUL, Team.ENEMY, Pos(1, 0))
         hero.hp = 1
-        val battle = BattleState(6, 6, listOf(hero, foe), emptySet(), setOf(Relic.TALISMAN))
+        val battle = BattleState(6, 6, listOf(hero, foe), emptyMap(), setOf(Relic.TALISMAN))
 
         battle.endTurn() // лучник быстрее, пропускаем его ход
         battle.aiTakeTurn()
@@ -127,7 +127,7 @@ class StatusAndSkillTest {
                 fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0)),
                 fighter(1, Roster.SPITTER, Team.ENEMY, Pos(7, 7)),
             ),
-            emptySet(),
+            emptyMap(),
             relics,
         )
 

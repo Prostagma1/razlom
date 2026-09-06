@@ -6,6 +6,7 @@ import io.github.prostagma1.razlom.game.Outcome
 import io.github.prostagma1.razlom.game.Pos
 import io.github.prostagma1.razlom.game.Roster
 import io.github.prostagma1.razlom.game.Team
+import io.github.prostagma1.razlom.game.Terrain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -25,7 +26,7 @@ class BattleTest {
             fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 4)),
             fighter(1, Roster.SPITTER, Team.ENEMY, Pos(4, 0)),
         ),
-        obstacles = emptySet(),
+        terrain = emptyMap(),
     )
 
     @Test
@@ -48,7 +49,11 @@ class BattleTest {
             width = 3,
             height = 3,
             combatants = listOf(fighter(0, Roster.LATNIK, Team.PLAYER, Pos(1, 2))),
-            obstacles = setOf(Pos(0, 1), Pos(1, 1), Pos(2, 1)),
+            terrain = mapOf(
+                Pos(0, 1) to Terrain.ROCK,
+                Pos(1, 1) to Terrain.ROCK,
+                Pos(2, 1) to Terrain.ROCK,
+            ),
         )
         assertTrue(battle.reachable().keys.all { it.y == 2 })
     }
@@ -62,7 +67,7 @@ class BattleTest {
                 fighter(0, Roster.LATNIK, Team.PLAYER, Pos(1, 1)),
                 fighter(1, Roster.SPITTER, Team.ENEMY, Pos(1, 2)),
             ),
-            obstacles = emptySet(),
+            terrain = emptyMap(),
         )
         val victim = battle.units.first { it.team == Team.ENEMY }
         battle.act(victim)
@@ -77,7 +82,7 @@ class BattleTest {
         val wounded = fighter(1, Roster.LATNIK, Team.PLAYER, Pos(1, 0))
         val foe = fighter(2, Roster.GHOUL, Team.ENEMY, Pos(2, 0))
         wounded.hp = 5
-        val battle = BattleState(4, 4, listOf(healer, wounded, foe), emptySet())
+        val battle = BattleState(4, 4, listOf(healer, wounded, foe), emptyMap())
 
         assertTrue(battle.canTarget(healer, wounded))
         assertFalse(battle.canTarget(healer, foe))
@@ -91,7 +96,7 @@ class BattleTest {
         val mage = fighter(0, Roster.MAG, Team.PLAYER, Pos(0, 0))
         val target = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(2, 0))
         val neighbour = fighter(2, Roster.SPITTER, Team.ENEMY, Pos(3, 0))
-        val battle = BattleState(5, 5, listOf(mage, target, neighbour), emptySet())
+        val battle = BattleState(5, 5, listOf(mage, target, neighbour), emptyMap())
 
         battle.act(target)
         assertEquals(Roster.SPITTER.maxHp - Roster.MAG.attack, target.hp)
@@ -103,7 +108,7 @@ class BattleTest {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0))
         val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(1, 0))
         foe.hp = 1
-        val battle = BattleState(3, 3, listOf(hero, foe), emptySet())
+        val battle = BattleState(3, 3, listOf(hero, foe), emptyMap())
 
         assertNull(battle.outcome)
         battle.act(foe)
@@ -114,7 +119,7 @@ class BattleTest {
     fun `ИИ доходит до игрока и не зацикливается`() {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 8))
         val foe = fighter(1, Roster.GHOUL, Team.ENEMY, Pos(0, 0))
-        val battle = BattleState(3, 9, listOf(hero, foe), emptySet())
+        val battle = BattleState(3, 9, listOf(hero, foe), emptyMap())
 
         // Игрок пропускает ходы, враг обязан дойти и добить.
         repeat(60) {

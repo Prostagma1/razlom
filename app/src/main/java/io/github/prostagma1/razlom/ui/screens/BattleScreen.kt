@@ -72,6 +72,7 @@ import io.github.prostagma1.razlom.game.Pos
 import io.github.prostagma1.razlom.game.SkillTarget
 import io.github.prostagma1.razlom.game.Status
 import io.github.prostagma1.razlom.game.Team
+import io.github.prostagma1.razlom.game.Terrain
 import io.github.prostagma1.razlom.ui.theme.Arcane
 import io.github.prostagma1.razlom.ui.theme.Blood
 import io.github.prostagma1.razlom.ui.theme.Bone
@@ -112,6 +113,18 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     val playerTurn = active?.team == Team.PLAYER
     var inspected by remember(battle) { mutableStateOf<Int?>(null) }
     var skillMode by remember(battle) { mutableStateOf(false) }
+
+    // Разведка: в начале боя поле открыто, потом опускается туман.
+    var scouting by remember(battle) { mutableStateOf(true) }
+    LaunchedEffect(battle) {
+        delay(3500)
+        scouting = false
+    }
+    val visible = remember(
+        scouting,
+        battle.units.map { it.pos to it.alive },
+    ) { if (scouting) null else battle.visibleCells() }
+    fun seen(p: Pos) = visible == null || p in visible
 
     // Режим способности не должен переезжать на следующего бойца.
     LaunchedEffect(active?.id, battle.round) { skillMode = false }
@@ -214,12 +227,47 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                     for (x in 0 until battle.width) {
                         val p = Pos(x, y)
                         val tl = cellTopLeft(p)
-                        val base = when {
-                            p in battle.obstacles -> Field.obstacle
-                            (x + y) % 2 == 0 -> Field.cell
-                            else -> Field.cellAlt
+                        val ground = if ((x + y) % 2 == 0) Field.cell else Field.cellAlt
+                        drawRect(ground, tl, Size(cell, cell))
+
+                        when (battle.terrain[p]) {
+                            Terrain.ROCK -> {
+                                drawRect(Field.rock, tl, Size(cell, cell))
+                                drawCircle(
+                                    Field.rockTop,
+                                    radius = cell * 0.28f,
+                                    center = Offset(tl.x + cell * 0.5f, tl.y + cell * 0.45f),
+                                )
+                            }
+
+                            Terrain.TREE -> {
+                                drawCircle(
+                                    Field.tree,
+                                    radius = cell * 0.42f,
+                                    center = Offset(tl.x + cell * 0.5f, tl.y + cell * 0.5f),
+                                )
+                                drawCircle(
+                                    Field.treeTop,
+                                    radius = cell * 0.26f,
+                                    center = Offset(tl.x + cell * 0.42f, tl.y + cell * 0.42f),
+                                )
+                            }
+
+                            Terrain.BRAMBLE -> {
+                                drawRect(Field.bramble, tl, Size(cell, cell))
+                                repeat(3) { i ->
+                                    val off = cell * (0.25f + 0.25f * i)
+                                    drawLine(
+                                        Field.brambleLine,
+                                        start = Offset(tl.x + off, tl.y + cell * 0.15f),
+                                        end = Offset(tl.x + off - cell * 0.18f, tl.y + cell * 0.85f),
+                                        strokeWidth = 2f,
+                                    )
+                                }
+                            }
+
+                            null -> Unit
                         }
-                        drawRect(base, tl, Size(cell, cell))
 
                         if (p in skillCells) {
                             drawRect(Field.skill.copy(alpha = 0.5f + 0.35f * pulse), tl, Size(cell, cell))
@@ -246,6 +294,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                 battle.units.forEach { unit ->
                     val anim = anims.getValue(unit.id)
                     if (anim.fade.value <= 0.01f) return@forEach
+                    if (unit.team == Team.ENEMY && !seen(unit.pos)) return@forEach
 
                     val c = centerOf(anim.cell.value + anim.lunge.value)
                     val alpha = anim.fade.value
@@ -350,6 +399,36 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         )
                     }
                 }
+
+                // Туман поверх всего: скрытые клетки гаснут вместе с тем, что на них.
+                visible?.let { seenCells ->
+                    for (y in 0 until battle.height) {
+                        for (x in 0 until battle.width) {
+                            val p = Pos(x, y)
+                            if (p !in seenCells) {
+                                drawRect(Field.fog.copy(alpha = 0.9f), cellTopLeft(p), Size(cell, cell))
+                            }
+                        }
+                    }
+                }
+            }
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible = scouting,
+                enter = fadeIn(tween(200)),
+                exit = fadeOut(tween(600)),
+                modifier = Modifier.align(Alignment.TopCenter),
+            ) {
+                Text(
+                    "Разведка: запоминайте поле",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Ember,
+                    modifier = Modifier
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Ink.copy(alpha = 0.8f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
             }
         }
 
@@ -525,7 +604,8 @@ private fun ActionPanel(
                         buildString {
                             append("HP ${unit.hp}/${unit.maxHp} · ⚔${unit.attack}")
                             if (unit.shield > 0) append(" · щит ${unit.shield}")
-                            append(" · дальность ${unit.type.range} · шагов ${battle.movesLeft}")
+                            append(" · дальность ${unit.type.range} · обзор ${unit.type.vision}")
+                            append(" · шагов ${battle.movesLeft}")
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = Steel,

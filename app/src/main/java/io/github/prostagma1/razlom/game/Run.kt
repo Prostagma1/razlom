@@ -184,21 +184,31 @@ object Encounters {
         return base + row * 3 + if (Relic.COIN in relics) 8 else 0
     }
 
+    /**
+     * За тяжёлый бой платят лучше: четыре карточки вместо трёх и гарантированная
+     * реликвия — иначе лезть в логово незачем.
+     */
     fun rewards(
         partySize: Int,
         unlocked: Set<String>,
         owned: Set<Relic>,
         rng: Random,
+        generous: Boolean = false,
     ): List<Reward> {
+        val free = (Relic.entries - owned).shuffled(rng)
+        val guaranteed = if (generous) free.firstOrNull()?.let { Reward.Trophy(it) } else null
+
         val pool = mutableListOf<Reward>(Reward.PartyAttack, Reward.PartyHealth, Reward.FullHeal)
         val hires = Roster.recruitable.filter { it.id in unlocked }
         if (partySize < MAX_PARTY && hires.isNotEmpty()) {
             pool += Reward.Recruit(hires.random(rng))
         }
-        (Relic.entries - owned).takeIf { it.isNotEmpty() }?.let {
-            pool += Reward.Trophy(it.random(rng))
-        }
-        return pool.shuffled(rng).take(3)
+        val spare = if (generous) free.getOrNull(1) else free.firstOrNull()
+        spare?.let { pool += Reward.Trophy(it) }
+
+        val size = if (generous) 4 else 3
+        val rest = pool.shuffled(rng).take(size - if (guaranteed == null) 0 else 1)
+        return (listOfNotNull(guaranteed) + rest).shuffled(rng)
     }
 
     fun recruitOffer(unlocked: Set<String>, rng: Random): List<Reward> =

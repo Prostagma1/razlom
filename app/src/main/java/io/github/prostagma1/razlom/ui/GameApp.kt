@@ -49,7 +49,11 @@ fun GameApp(game: Game) {
                     }
 
                     Screen.REWARD -> RewardScreen(
-                        title = if (game.currentKind == NodeKind.RECRUIT) "Наёмники у костра" else "Трофеи",
+                        title = when (game.currentKind) {
+                            NodeKind.RECRUIT -> "Наёмники у костра"
+                            NodeKind.ELITE -> "Богатая добыча"
+                            else -> "Трофеи"
+                        },
                         rewards = game.rewards,
                         party = game.party,
                         onPick = game::takeReward,

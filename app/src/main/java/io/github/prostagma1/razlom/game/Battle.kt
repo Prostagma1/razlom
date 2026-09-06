@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlin.math.abs
 import kotlin.random.Random
 
 enum class Outcome { VICTORY, DEFEAT }
@@ -12,12 +13,14 @@ enum class Outcome { VICTORY, DEFEAT }
 /**
  * Пошаговый бой на прямоугольной сетке. Ходы раздаются по инициативе,
  * каждый раунд очередь пересобирается заново.
+ *
+ * Ходят по сторонам клетки, а бьют и видят по-королевски — наискосок тоже.
  */
 class BattleState(
     val width: Int,
     val height: Int,
     combatants: List<Combatant>,
-    val obstacles: Set<Pos>,
+    val terrain: Map<Pos, Terrain>,
     val relics: Set<Relic> = emptySet(),
     restore: Restore? = null,
 ) {
@@ -79,10 +82,65 @@ class BattleState(
         }
     }
 
+    // ---- местность -----------------------------------------------------
+
     fun unitAt(p: Pos): Combatant? = units.firstOrNull { it.alive && it.pos == p }
 
-    fun blocked(p: Pos): Boolean =
-        p.x !in 0 until width || p.y !in 0 until height || p in obstacles || unitAt(p) != null
+    fun inBounds(p: Pos) = p.x in 0 until width && p.y in 0 until height
+
+    /** Можно ли в принципе стоять на клетке — без учёта того, кто там сейчас. */
+    fun passable(p: Pos) = inBounds(p) && terrain[p]?.blocksMove != true
+
+    fun blocked(p: Pos): Boolean = !passable(p) || unitAt(p) != null
+
+    private fun moveCost(p: Pos): Int = terrain[p]?.moveCost?.takeIf { it > 0 } ?: 1
+
+    // ---- туман войны ---------------------------------------------------
+
+    /** Видит ли клетку хоть кто-то из живых бойцов отряда. */
+    fun isVisible(p: Pos): Boolean = units.any {
+        it.alive && it.team == Team.PLAYER &&
+            it.pos.reach(p) <= it.type.vision && lineOfSight(it.pos, p)
+    }
+
+    /** Все клетки, открытые отряду прямо сейчас. */
+    fun visibleCells(): Set<Pos> = buildSet {
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val p = Pos(x, y)
+                if (isVisible(p)) add(p)
+            }
+        }
+    }
+
+    /**
+     * Прямая видимость по Брезенхэму. Камень и дерево обрывают луч, но сама
+     * загораживающая клетка видна — иначе препятствия были бы невидимыми.
+     */
+    private fun lineOfSight(from: Pos, to: Pos): Boolean {
+        if (from == to) return true
+        var x = from.x
+        var y = from.y
+        val dx = abs(to.x - x)
+        val dy = abs(to.y - y)
+        val sx = if (x < to.x) 1 else -1
+        val sy = if (y < to.y) 1 else -1
+        var err = dx - dy
+
+        while (true) {
+            val doubled = 2 * err
+            if (doubled > -dy) {
+                err -= dy
+                x += sx
+            }
+            if (doubled < dx) {
+                err += dx
+                y += sy
+            }
+            if (x == to.x && y == to.y) return true
+            if (terrain[Pos(x, y)]?.blocksSight == true) return false
+        }
+    }
 
     // ---- очередь ходов -------------------------------------------------
 
@@ -160,32 +218,58 @@ class BattleState(
 
     // ---- перемещение ---------------------------------------------------
 
-    /** Клетки, куда активный боец может дойти, и цена пути до каждой. */
+    /**
+     * Клетки, куда активный боец может дойти, и цена пути до каждой.
+     * Бурелом и деревья стоят двух шагов, поэтому считаем не обходом в ширину,
+     * а простыми релаксациями — поле маленькое, это дешевле любой очереди.
+     */
     fun reachable(): Map<Pos, Int> {
         val start = active?.pos ?: return emptyMap()
         val budget = movesLeft
-        val cost = mutableMapOf(start to 0)
-        var frontier = listOf(start)
-        while (frontier.isNotEmpty()) {
-            val next = mutableListOf<Pos>()
-            for (p in frontier) {
-                val c = cost.getValue(p)
-                if (c >= budget) continue
+        val best = mutableMapOf(start to 0)
+
+        var changed = true
+        while (changed) {
+            changed = false
+            for ((p, cost) in best.toList()) {
                 for (n in neighbours(p)) {
-                    if (n in cost || blocked(n)) continue
-                    cost[n] = c + 1
-                    next += n
+                    if (blocked(n)) continue
+                    val next = cost + moveCost(n)
+                    if (next <= budget && next < (best[n] ?: Int.MAX_VALUE)) {
+                        best[n] = next
+                        changed = true
+                    }
                 }
             }
-            frontier = next
         }
-        cost.remove(start)
-        return cost
+        best.remove(start)
+        return best
     }
 
     private fun neighbours(p: Pos) = listOf(
         Pos(p.x + 1, p.y), Pos(p.x - 1, p.y), Pos(p.x, p.y + 1), Pos(p.x, p.y - 1),
     )
+
+    /**
+     * Сколько шагов до каждой клетки, если идти в обход препятствий.
+     * Бойцы не учитываются: они разойдутся, а стены — нет.
+     */
+    private fun distanceField(from: Pos): Map<Pos, Int> {
+        val dist = mutableMapOf(from to 0)
+        var frontier = listOf(from)
+        while (frontier.isNotEmpty()) {
+            val next = mutableListOf<Pos>()
+            for (p in frontier) {
+                for (n in neighbours(p)) {
+                    if (n in dist || !passable(n)) continue
+                    dist[n] = dist.getValue(p) + 1
+                    next += n
+                }
+            }
+            frontier = next
+        }
+        return dist
+    }
 
     fun moveActiveTo(target: Pos): Boolean {
         val unit = active ?: return false
@@ -204,11 +288,13 @@ class BattleState(
     }
 
     fun canTarget(attacker: Combatant, target: Combatant): Boolean {
-        if (!target.alive || attacker.pos.dist(target.pos) > attacker.type.range) return false
+        if (!target.alive || attacker.pos.reach(target.pos) > attacker.type.range) return false
         return if (attacker.type.ability == Ability.HEAL) {
             target.team == attacker.team && target.hp < target.maxHp
         } else {
-            target.team != attacker.team
+            // По врагу нельзя бить вслепую: он должен быть виден отряду.
+            target.team != attacker.team &&
+                (attacker.team != Team.PLAYER || isVisible(target.pos))
         }
     }
 
@@ -223,16 +309,15 @@ class BattleState(
 
             Ability.SPLASH -> {
                 strike(attacker, target, power(attacker))
-                units.filter {
-                    it.alive && it.team != attacker.team && it.id != target.id &&
-                        it.pos.dist(target.pos) == 1
-                }.forEach { strike(attacker, it, power(attacker) / 2) }
+                neighboursOf(target, attacker.team).forEach {
+                    strike(attacker, it, power(attacker) / 2)
+                }
             }
 
             Ability.FLANK -> {
                 val supported = units.any {
                     it.alive && it.team == attacker.team && it.id != attacker.id &&
-                        it.pos.dist(target.pos) == 1
+                        it.pos.reach(target.pos) == 1
                 }
                 strike(attacker, target, if (supported) power(attacker) * 3 / 2 else power(attacker))
             }
@@ -241,17 +326,20 @@ class BattleState(
                 strike(attacker, target, power(attacker))
                 val dx = (target.pos.x - attacker.pos.x).coerceIn(-1, 1)
                 val dy = (target.pos.y - attacker.pos.y).coerceIn(-1, 1)
-                if (dx == 0 || dy == 0) {
-                    unitAt(Pos(target.pos.x + dx, target.pos.y + dy))
-                        ?.takeIf { it.team != attacker.team }
-                        ?.let { strike(attacker, it, power(attacker) / 2) }
-                }
+                unitAt(Pos(target.pos.x + dx, target.pos.y + dy))
+                    ?.takeIf { it.team != attacker.team }
+                    ?.let { strike(attacker, it, power(attacker) / 2) }
             }
 
             Ability.NONE -> strike(attacker, target, power(attacker))
         }
 
         finishAction()
+    }
+
+    /** Живые противники команды [side], стоящие вплотную к цели, включая диагонали. */
+    private fun neighboursOf(target: Combatant, side: Team) = units.filter {
+        it.alive && it.team != side && it.id != target.id && it.pos.reach(target.pos) == 1
     }
 
     // ---- способности ---------------------------------------------------
@@ -264,11 +352,12 @@ class BattleState(
         return when (skill.target) {
             SkillTarget.SELF -> listOf(unit)
             SkillTarget.ALLY -> units.filter {
-                it.alive && it.team == unit.team && unit.pos.dist(it.pos) <= skill.range
+                it.alive && it.team == unit.team && unit.pos.reach(it.pos) <= skill.range
             }
 
             SkillTarget.ENEMY -> units.filter {
-                it.alive && it.team != unit.team && unit.pos.dist(it.pos) <= skill.range
+                it.alive && it.team != unit.team && unit.pos.reach(it.pos) <= skill.range &&
+                    (unit.team != Team.PLAYER || isVisible(it.pos))
             }
         }
     }
@@ -283,7 +372,7 @@ class BattleState(
         when (skill.kind) {
             SkillKind.GUARD -> {
                 val covered = units.filter {
-                    it.alive && it.team == unit.team && unit.pos.dist(it.pos) <= 1
+                    it.alive && it.team == unit.team && unit.pos.reach(it.pos) <= 1
                 }
                 covered.forEach { it.shield += 10 }
                 log += "Щит держат: ${covered.joinToString { it.type.name }}"
@@ -297,11 +386,9 @@ class BattleState(
             SkillKind.VOLLEY -> strike(unit, target, power(unit) * 9 / 5)
 
             SkillKind.FIRESTORM -> {
-                val caught = units.filter {
-                    it.alive && it.team != unit.team &&
-                        (it.id == target.id || it.pos.dist(target.pos) == 1)
+                (listOf(target) + neighboursOf(target, unit.team)).forEach {
+                    strike(unit, it, power(unit))
                 }
-                caught.forEach { strike(unit, it, power(unit)) }
             }
 
             SkillKind.TONIC -> {
@@ -322,11 +409,9 @@ class BattleState(
             SkillKind.HOWL -> target.apply(Status.STUN, 1)
 
             SkillKind.RIFT -> {
-                val caught = units.filter {
-                    it.alive && it.team != unit.team &&
-                        (it.id == target.id || it.pos.dist(target.pos) == 1)
+                (listOf(target) + neighboursOf(target, unit.team)).forEach {
+                    strike(unit, it, power(unit) * 6 / 5)
                 }
-                caught.forEach { strike(unit, it, power(unit) * 6 / 5) }
                 if (target.alive) target.apply(Status.STUN, 1)
             }
         }
@@ -409,29 +494,41 @@ class BattleState(
             return
         }
 
-        skillTargets().minByOrNull { it.hp }?.let {
-            useSkill(it)
-            return
-        }
-        foes.filter { canTarget(me, it) }.minByOrNull { it.hp }?.let {
-            act(it)
-            return
-        }
-
-        // Иначе подходим ближе к самой уязвимой цели.
-        val prey = foes.minByOrNull { me.pos.dist(it.pos) * 100 + it.hp } ?: foes.first()
-        val step = reachable().keys.minByOrNull { it.dist(prey.pos) }
-        if (step != null && step.dist(prey.pos) < me.pos.dist(prey.pos)) moveActiveTo(step)
-
-        skillTargets().minByOrNull { it.hp }?.let {
-            useSkill(it)
-            return
-        }
-        foes.filter { canTarget(me, it) }.minByOrNull { it.hp }?.let {
-            act(it)
-            return
-        }
+        if (strikeIfPossible(me)) return
+        approach(me, foes)
+        if (strikeIfPossible(me)) return
         endTurn()
+    }
+
+    private fun strikeIfPossible(me: Combatant): Boolean {
+        skillTargets().minByOrNull { it.hp }?.let {
+            useSkill(it)
+            return true
+        }
+        units.filter { it.alive && it.team != me.team && canTarget(me, it) }
+            .minByOrNull { it.hp }
+            ?.let {
+                act(it)
+                return true
+            }
+        return false
+    }
+
+    /**
+     * Шаг к цели по настоящему пути, а не по прямой: иначе боец утыкается
+     * в камень и топчется на месте, потому что любой обход сначала уводит дальше.
+     */
+    private fun approach(me: Combatant, foes: List<Combatant>) {
+        val prey = foes.minByOrNull { me.pos.dist(it.pos) * 100 + it.hp } ?: return
+        val field = distanceField(prey.pos)
+        val here = field[me.pos] ?: Int.MAX_VALUE
+
+        val step = reachable().entries
+            .filter { field.containsKey(it.key) }
+            .minByOrNull { field.getValue(it.key) * 100 + it.value }
+            ?: return
+
+        if (field.getValue(step.key) < here) moveActiveTo(step.key)
     }
 }
 
@@ -473,14 +570,20 @@ object BattleFactory {
             )
         }
 
-        val taken = units.map { it.pos }.toSet()
-        val obstacles = buildSet {
-            repeat(rng.nextInt(3, 7)) {
+        return BattleState(WIDTH, HEIGHT, units, growTerrain(units.map { it.pos }.toSet(), rng), relics)
+    }
+
+    /** Раскидывает камни, деревья и бурелом по середине поля, не задевая строй. */
+    private fun growTerrain(taken: Set<Pos>, rng: Random): Map<Pos, Terrain> = buildMap {
+        fun scatter(kind: Terrain, count: Int) {
+            repeat(count) {
                 val p = Pos(rng.nextInt(WIDTH), rng.nextInt(2, HEIGHT - 2))
-                if (p !in taken) add(p)
+                if (p !in taken && p !in this) put(p, kind)
             }
         }
-        return BattleState(WIDTH, HEIGHT, units, obstacles, relics)
+        scatter(Terrain.ROCK, rng.nextInt(3, 7))
+        scatter(Terrain.TREE, rng.nextInt(3, 6))
+        scatter(Terrain.BRAMBLE, rng.nextInt(2, 5))
     }
 
     /** Расставляет бойцов от центра ряда к краям. */

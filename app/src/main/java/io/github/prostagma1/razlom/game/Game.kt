@@ -183,7 +183,13 @@ class Game(
             clearSave()
             return
         }
-        rewards = Encounters.rewards(party.size, profile.unlockedUnits, relicSet, rng)
+        rewards = Encounters.rewards(
+            partySize = party.size,
+            unlocked = profile.unlockedUnits,
+            owned = relicSet,
+            rng = rng,
+            generous = node?.kind == NodeKind.ELITE,
+        )
         screen = Screen.REWARD
         save()
     }

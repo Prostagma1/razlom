@@ -6,7 +6,10 @@ package io.github.prostagma1.razlom.game
  * Повторяющиеся ключи означают список.
  */
 object SaveCodec {
-    private const val VERSION = 2
+    private const val VERSION = 3
+
+    /** Что умеем читать. Второй формат знал только сплошные препятствия. */
+    private val SUPPORTED = setOf(2, 3)
 
     // ---- профиль -------------------------------------------------------
 
@@ -64,7 +67,11 @@ object SaveCodec {
             appendLine("bmoves=${battle.movesLeft}")
             appendLine("btalisman=${if (battle.talismanSpent) 1 else 0}")
             appendLine("bqueue=${battle.queueIds.joinToString(",")}")
-            appendLine("bobst=${battle.obstacles.joinToString(";") { "${it.x},${it.y}" }}")
+            appendLine(
+                "bterr=" + battle.terrain.entries.joinToString(";") {
+                    "${it.key.x},${it.key.y},${it.value.name}"
+                },
+            )
             battle.units.forEach { appendLine("bunit=${encodeUnit(it)}") }
         }
     }
@@ -78,7 +85,8 @@ object SaveCodec {
         fun one(key: String): String? = lines.firstOrNull { it.first == key }?.second
         fun many(key: String): List<String> = lines.filter { it.first == key }.map { it.second }
 
-        if (one("v")?.toIntOrNull() != VERSION) return@runCatching false
+        val version = one("v")?.toIntOrNull() ?: return@runCatching false
+        if (version !in SUPPORTED) return@runCatching false
 
         // Карта.
         val nodes = many("mnode").map { raw ->
@@ -129,8 +137,14 @@ object SaveCodec {
                 width = size[0].toInt(),
                 height = size[1].toInt(),
                 combatants = units,
-                obstacles = one("bobst").orEmpty().split(';').filter { it.isNotBlank() }
-                    .map { it.split(',').let { p -> Pos(p[0].toInt(), p[1].toInt()) } }.toSet(),
+                // Старые сохранения знали только «препятствие» — считаем их камнями.
+                terrain = one("bterr")?.split(';')?.filter { it.isNotBlank() }?.associate {
+                    val f = it.split(',')
+                    Pos(f[0].toInt(), f[1].toInt()) to Terrain.valueOf(f[2])
+                } ?: one("bobst").orEmpty().split(';').filter { it.isNotBlank() }.associate {
+                    val f = it.split(',')
+                    Pos(f[0].toInt(), f[1].toInt()) to Terrain.ROCK
+                },
                 relics = game.relicSet,
                 restore = BattleState.Restore(
                     round = one("bround")!!.toInt(),
