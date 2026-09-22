@@ -48,6 +48,14 @@ class BattleState(
     internal var talismanSpent = false
         private set
 
+    // Объявлено до init: init сразу начинает первый ход и трогает счётчик.
+    /** Сколько ходов прошло в бою: растёт каждый раз, когда ход переходит к новому бойцу. */
+    var turnCount by mutableIntStateOf(0)
+        private set
+
+    /** Идёт ли сейчас действие, чей бросок оказался критом. */
+    private var critInFlight = false
+
     /** Откуда боец начал ход — чтобы можно было вернуть его на место. */
     private var turnStart by mutableStateOf<Pos?>(null)
     private var turnStartMoves by mutableIntStateOf(0)
@@ -223,6 +231,7 @@ class BattleState(
             movesLeft = unit.type.move + if (unit.team == Team.PLAYER && Relic.BOOTS in relics) 1 else 0
             turnStart = unit.pos
             turnStartMoves = movesLeft
+            turnCount++
             onTurnStart?.invoke()
             return
         }
@@ -370,6 +379,8 @@ class BattleState(
         val healing: Boolean,
         /** Во сколько раз ударил крит; 1 — крита не было. */
         val critMultiplier: Int = 1,
+        /** На каком ходу боя брошено — чтобы старый бросок не висел на экране вечно. */
+        val turn: Int = 0,
     ) {
         val crit: Boolean get() = critMultiplier > 1
     }
@@ -399,7 +410,9 @@ class BattleState(
             target = target.type.name,
             healing = healing,
             critMultiplier = if (roll.crit) rules.critMultiplier else 1,
+            turn = turnCount,
         )
+        critInFlight = roll.crit
         return amount
     }
 
@@ -593,6 +606,7 @@ class BattleState(
             Ability.NONE -> strike(attacker, target, amount)
         }
 
+        critInFlight = false
         finishAction()
     }
 
@@ -681,6 +695,7 @@ class BattleState(
         }
 
         unit.cooldown = skill.cooldown
+        critInFlight = false
         finishAction()
     }
 
@@ -700,12 +715,14 @@ class BattleState(
 
     private fun heal(healer: Combatant, target: Combatant, amount: Int) {
         val healed = minOf(healAmount(healer, amount), target.maxHp - target.hp)
+        if (critInFlight && healed > 0) target.critsTaken++
         target.hp += healed
         log += "${healer.type.name}: лечение ${target.type.name} +$healed"
     }
 
     private fun strike(from: Combatant, to: Combatant, amount: Int) {
         val dealt = hurt(to, amount, from.type.name)
+        if (critInFlight && dealt > 0) to.critsTaken++
         val poisonous = from.team == Team.PLAYER && Relic.VIALS in relics && from.type.range >= 3
         if (poisonous && to.alive && dealt > 0) to.apply(Status.POISON, 2)
     }

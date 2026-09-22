@@ -12,6 +12,7 @@ import io.github.prostagma1.razlom.game.RollRules
 import io.github.prostagma1.razlom.game.Roster
 import io.github.prostagma1.razlom.game.Screen
 import io.github.prostagma1.razlom.game.Squads
+import io.github.prostagma1.razlom.game.Status
 import io.github.prostagma1.razlom.game.Team
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -153,4 +154,49 @@ class CritAndRelicTest {
         assertEquals(battle.units.map { it.hp }, back.units.map { it.hp })
         assertEquals(battle.units.map { it.pos }, back.units.map { it.pos })
     }
+
+    /**
+     * Регрессия: всплывающее число красилось в крит по «последнему броску в бою».
+     * Яд, тикнувший после чужого крита, выглядел как ещё один крит.
+     */
+    @Test
+    fun `яд после крита не считается критом`() {
+        val (battle, foe) = arena(critSeed())
+        battle.act(foe)
+        assertTrue(battle.lastRoll!!.crit)
+        assertEquals("крит задел цель ровно один раз", 1, foe.critsTaken)
+
+        // Травим цель и крутим ходы: яд бьёт, а новых критов по ней нет.
+        foe.apply(Status.POISON, 3)
+        val before = foe.hp
+        repeat(6) { if (battle.outcome == null) battle.endTurn() }
+        assertTrue("яд должен был ударить", foe.hp < before)
+        assertEquals("яд не крит", 1, foe.critsTaken)
+    }
+
+    @Test
+    fun `обычный удар крит не засчитывает`() {
+        repeat(100) { seed ->
+            val (battle, foe) = arena(seed)
+            battle.act(foe)
+            assertEquals("бросок $seed", if (battle.lastRoll!!.crit) 1 else 0, foe.critsTaken)
+        }
+    }
+
+    /** Регрессия: полоска держала последний бросок, пока кто-нибудь снова не бросит. */
+    @Test
+    fun `бросок помнит свой ход, и ходы идут дальше`() {
+        val (battle, foe) = arena(1)
+        battle.act(foe)
+        val rolledAt = battle.lastRoll!!.turn
+
+        // Удар завершил ход — следующий боец уже ходит.
+        assertEquals(rolledAt + 1, battle.turnCount)
+        repeat(3) { battle.endTurn() }
+        assertTrue(
+            "через несколько ходов бросок устаревает: ${battle.turnCount} против $rolledAt",
+            battle.turnCount - rolledAt > 2,
+        )
+    }
 }
+

@@ -620,8 +620,11 @@ private fun UnitAnimator(
         if (previous < 0 || unit.hp == previous) return@LaunchedEffect
 
         anim.popupValue = unit.hp - previous
-        // Здоровье меняется в том же действии, что и бросок, — так что это его крит.
-        anim.popupCrit = battle.lastRoll?.crit == true
+        // Крит — только если по этому бойцу только что прошёл удар-крит.
+        // Раньше флажок брался из последнего броска в бою, и яд на следующем
+        // ходу всплывал золотым «−3!», будто крит продолжается.
+        anim.popupCrit = unit.critsTaken != anim.shownCrits
+        anim.shownCrits = unit.critsTaken
         launch {
             anim.popup.snapTo(0f)
             anim.popup.animateTo(1f, tween(850))
@@ -763,7 +766,9 @@ private fun ActionPanel(
             }
         }
 
-        RollStrip(battle.lastRoll)
+        // Держим бросок ещё два хода, чтобы успеть прочитать, а потом убираем:
+        // иначе золотой «КРИТ» висел на экране, пока кто-нибудь снова не бросит.
+        RollStrip(battle.lastRoll?.takeIf { battle.turnCount - it.turn <= 2 })
 
         // Строка-подсказка всегда одной высоты: меняется текст, а не раскладка.
         Text(

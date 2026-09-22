@@ -22,8 +22,8 @@ android {
         applicationId = "io.github.prostagma1.razlom"
         minSdk = 36
         targetSdk = 37
-        versionCode = 8
-        versionName = "1.5"
+        versionCode = 9
+        versionName = "1.5.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
