@@ -109,7 +109,9 @@ class ForecastAndUndoTest {
         val f = battle.forecast(foe)!!
         assertEquals("меньше пяти латник не выбрасывает — щит съест все пять", 5, f.absorbed)
         assertEquals(Roster.LATNIK.damage.min - 5, f.minAmount)
-        assertEquals(Roster.LATNIK.damage.max - 5, f.maxAmount)
+        // Обычный удар без крита — до 10, крит на 22 щит срежет до 17.
+        assertEquals(Roster.LATNIK.damage.max - 1 - 5, f.plainMax)
+        assertEquals(Roster.LATNIK.damage.max * 2 - 5, f.critAmount)
 
         battle.act(foe)
         assertTrue(foe.hp in f.minRemaining..f.maxRemaining)

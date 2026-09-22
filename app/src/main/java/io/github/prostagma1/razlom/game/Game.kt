@@ -76,8 +76,8 @@ class Game(
     fun newRun(squad: Squad = Squads.ZASTAVA) {
         lastSquad = squad
         party.clear()
-        squad.members.forEach { party += Hero.recruit(nextHeroUid++, it, rng) }
         relics.clear()
+        squad.members.forEach { party += hire(it) }
         gold = 0
         map = MapGenerator.generate(rng)
         visited.clear()
@@ -100,6 +100,7 @@ class Game(
     fun continueRun(): Boolean {
         val text = storage?.read(Storage.RUN) ?: return false
         val ok = SaveCodec.decodeRun(text, this)
+        battle?.let { watch(it) }
         if (!ok) {
             storage.delete(Storage.RUN)
             hasSavedRun = false
@@ -148,7 +149,7 @@ class Game(
                     Encounters.foesFor(node.kind, node.row, rng),
                     rng,
                     relicSet,
-                )
+                ).also { watch(it) }
                 screen = Screen.BATTLE
             }
         }
@@ -205,7 +206,7 @@ class Game(
         var rolled: String? = null
         when (reward) {
             is Reward.Recruit -> if (party.size < Encounters.MAX_PARTY) {
-                val hero = Hero.recruit(nextHeroUid++, reward.type, rng)
+                val hero = hire(reward.type)
                 party += hero
                 rolled = rolledNotice(hero)
             }
@@ -239,7 +240,7 @@ class Game(
 
             is ShopOffer.Hire -> {
                 if (party.size >= Encounters.MAX_PARTY) return
-                val hero = Hero.recruit(nextHeroUid++, offer.type, rng)
+                val hero = hire(offer.type)
                 party += hero
                 notice = rolledNotice(hero)
             }
@@ -250,6 +251,15 @@ class Game(
         gold -= offer.price
         shop = shop - offer
         save()
+    }
+
+    /** Новый боец в отряд. Благословенные кости бросают здоровье дважды. */
+    private fun hire(type: UnitType): Hero =
+        Hero.recruit(nextHeroUid++, type, rng, twice = Relic.BLESSED in relicSet)
+
+    /** Каждый новый ход в бою пишет сохранение: процесс могут убить в любой момент. */
+    private fun watch(battle: BattleState) {
+        battle.onTurnStart = { save() }
     }
 
     /** «Нанят Лучник: на костях 2к6+11 выпало 21 HP» — удача видна сразу. */

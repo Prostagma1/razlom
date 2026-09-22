@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import io.github.prostagma1.razlom.game.Pos
@@ -31,6 +32,9 @@ class UnitAnim(pos: Pos) {
     /** Всплывающее число урона или лечения. */
     val popup = Animatable(1f)
     var popupValue by mutableIntStateOf(0)
+
+    /** Число всплыло от крита — рисуется крупнее и золотом. */
+    var popupCrit by mutableStateOf(false)
 
     /** Здоровье на прошлом кадре — чтобы поймать сам факт изменения. */
     var lastHp = -1

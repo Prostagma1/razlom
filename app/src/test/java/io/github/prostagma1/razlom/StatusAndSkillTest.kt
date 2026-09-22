@@ -53,7 +53,7 @@ class StatusAndSkillTest {
     @Test
     fun `подсечка копейщика оглушает и уходит на перезарядку`() {
         val spear = fighter(0, Roster.KOPEYSHCHIK, Team.PLAYER, Pos(0, 0))
-        val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(2, 0))
+        val foe = Combatant(1, Roster.SPITTER, Team.ENEMY, 200, Roster.SPITTER.damage, 200, Pos(2, 0))
         val battle = BattleState(6, 6, listOf(spear, foe), emptyMap())
 
         assertTrue(foe in battle.skillTargets())
@@ -79,14 +79,16 @@ class StatusAndSkillTest {
 
         val healed = wounded.hp - 5
         val dice = Roster.ZNAHAR.damage
-        assertTrue("отвар $healed вне костей", healed in dice.min * 3 / 2..dice.max * 3 / 2)
+        assertEquals(minOf(battle.lastRoll!!.amount, wounded.maxHp - 5), healed)
+        assertTrue("отвар $healed вне костей", healed >= dice.min * 3 / 2)
         assertFalse(wounded.has(Status.POISON))
     }
 
     @Test
     fun `щит съедает урон раньше здоровья`() {
         val hero = fighter(0, Roster.LATNIK, Team.PLAYER, Pos(0, 0))
-        val foe = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(1, 0))
+        // Живучий враг: если латник убьёт его критом, ответного удара не будет.
+        val foe = Combatant(1, Roster.SPITTER, Team.ENEMY, 200, Roster.SPITTER.damage, 200, Pos(1, 0))
         hero.shield = 100
         val battle = BattleState(6, 6, listOf(hero, foe), emptyMap())
 

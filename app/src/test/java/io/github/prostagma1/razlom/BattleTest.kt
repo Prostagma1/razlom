@@ -12,11 +12,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.random.Random
 
 class BattleTest {
 
     private fun fighter(id: Int, type: io.github.prostagma1.razlom.game.UnitType, team: Team, pos: Pos) =
         Combatant(id, type, team, type.hp.nominal, type.damage, type.hp.nominal, pos)
+
+    /** Мишень с запасом здоровья: даже крит её не добьёт, и урон виден целиком. */
+    private fun target(id: Int, pos: Pos) =
+        Combatant(id, Roster.SPITTER, Team.ENEMY, 200, Roster.SPITTER.damage, 200, pos)
 
     /** Латник (скорость 4) против Плевуна (скорость 3): первым ходит латник. */
     private fun duel(): BattleState = BattleState(
@@ -60,21 +65,23 @@ class BattleTest {
 
     @Test
     fun `атака наносит урон и передаёт ход`() {
-        val battle = BattleState(
-            width = 3,
-            height = 3,
-            combatants = listOf(
-                fighter(0, Roster.LATNIK, Team.PLAYER, Pos(1, 1)),
-                fighter(1, Roster.SPITTER, Team.ENEMY, Pos(1, 2)),
-            ),
-            terrain = emptyMap(),
-        )
-        val victim = battle.units.first { it.team == Team.ENEMY }
-        battle.act(victim)
+        repeat(100) { seed ->
+            val victim = target(1, Pos(1, 2))
+            val battle = BattleState(
+                width = 3,
+                height = 3,
+                combatants = listOf(fighter(0, Roster.LATNIK, Team.PLAYER, Pos(1, 1)), victim),
+                terrain = emptyMap(),
+                rng = Random(seed),
+            )
+            battle.act(victim)
 
-        val lost = Roster.SPITTER.hp.nominal - victim.hp
-        assertTrue("урон $lost вне костей ${Roster.LATNIK.damage}", lost in Roster.LATNIK.damage.min..Roster.LATNIK.damage.max)
-        assertEquals(Team.ENEMY, battle.active?.team)
+            val lost = 200 - victim.hp
+            // Снято ровно столько, сколько выпало на костях (с критом — вдвое).
+            assertEquals("бросок $seed", battle.lastRoll!!.amount, lost)
+            assertTrue(lost in Roster.LATNIK.damage.min..Roster.LATNIK.damage.max * 2)
+            assertEquals(Team.ENEMY, battle.active?.team)
+        }
     }
 
     @Test
@@ -90,22 +97,23 @@ class BattleTest {
 
         battle.act(wounded)
         val healed = wounded.hp - 5
-        assertTrue("лечение $healed вне костей", healed in Roster.ZNAHAR.damage.min..Roster.ZNAHAR.damage.max)
+        assertEquals(minOf(battle.lastRoll!!.amount, wounded.maxHp - 5), healed)
     }
 
     @Test
     fun `маг задевает соседей цели`() {
-        val mage = fighter(0, Roster.MAG, Team.PLAYER, Pos(0, 0))
-        val target = fighter(1, Roster.SPITTER, Team.ENEMY, Pos(2, 0))
-        val neighbour = fighter(2, Roster.SPITTER, Team.ENEMY, Pos(3, 0))
-        val battle = BattleState(5, 5, listOf(mage, target, neighbour), emptyMap())
+        repeat(100) { seed ->
+            val mage = fighter(0, Roster.MAG, Team.PLAYER, Pos(0, 0))
+            val main = target(1, Pos(2, 0))
+            val neighbour = target(2, Pos(3, 0))
+            val battle = BattleState(5, 5, listOf(mage, main, neighbour), emptyMap(), rng = Random(seed))
 
-        battle.act(target)
-        val main = Roster.SPITTER.hp.nominal - target.hp
-        val side = Roster.SPITTER.hp.nominal - neighbour.hp
-        assertTrue(main in Roster.MAG.damage.min..Roster.MAG.damage.max)
-        // Кости бросаются один раз: сосед получает ровно половину того же броска.
-        assertEquals(main / 2, side)
+            battle.act(main)
+            val hit = 200 - main.hp
+            assertEquals("бросок $seed", battle.lastRoll!!.amount, hit)
+            // Кости бросаются один раз: сосед получает ровно половину того же броска.
+            assertEquals("бросок $seed", hit / 2, 200 - neighbour.hp)
+        }
     }
 
     @Test

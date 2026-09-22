@@ -32,9 +32,15 @@ class Hero(
     }
 
     companion object {
-        /** Нанять бойца: бросаем его кости здоровья. */
-        fun recruit(uid: Int, type: UnitType, rng: Random): Hero =
-            Hero(uid, type, baseHp = type.hp.roll(rng).total)
+        /**
+         * Нанять бойца: бросаем его кости здоровья. С благословенными
+         * костями бросаем дважды и берём лучшее.
+         */
+        fun recruit(uid: Int, type: UnitType, rng: Random, twice: Boolean = false): Hero {
+            val first = type.hp.roll(rng).total
+            val best = if (twice) maxOf(first, type.hp.roll(rng).total) else first
+            return Hero(uid, type, baseHp = best)
+        }
     }
 }
 

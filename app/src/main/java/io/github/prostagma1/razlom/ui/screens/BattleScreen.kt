@@ -15,6 +15,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
+import io.github.prostagma1.razlom.ui.theme.Gold
+import io.github.prostagma1.razlom.ui.theme.InkLine
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.border
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,7 +108,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
     val anims = remember(battle) { mutableMapOf<Int, UnitAnim>() }
     battle.units.forEach { anims.getOrPut(it.id) { UnitAnim(it.pos) } }
     battle.units.forEach { unit ->
-        key(unit.id) { UnitAnimator(unit, anims.getValue(unit.id), haptics) }
+        key(unit.id) { UnitAnimator(unit, anims.getValue(unit.id), haptics, battle) }
     }
 
     // Выпад атакующего в сторону цели.
@@ -431,10 +436,11 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         )
                     }
 
-                    // Полоска здоровья с «тающим» хвостом недавнего урона.
-                    val barW = cell * 0.72f
-                    val barH = cell * 0.08f
-                    val barTl = Offset(c.x - barW / 2f, c.y + cell * 0.36f)
+                    // Полоска здоровья с числом и «тающим» хвостом недавнего урона.
+                    // Здоровье выбрасывается костями, так что одной доли мало — нужно число.
+                    val barW = cell * 0.8f
+                    val barH = cell * 0.2f
+                    val barTl = Offset(c.x - barW / 2f, c.y + cell * 0.26f)
                     val ratio = (unit.hp.toFloat() / unit.maxHp).coerceIn(0f, 1f)
                     drawRect(Ink.copy(alpha = 0.85f * alpha), barTl, Size(barW, barH))
                     if (anim.popupValue < 0 && anim.popup.value < 1f) {
@@ -446,16 +452,37 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         )
                     }
                     drawRect(tinted.copy(alpha = alpha), barTl, Size(barW * ratio, barH))
+                    val hpText = measurer.measure(
+                        "${unit.hp}",
+                        TextStyle(
+                            color = Bone,
+                            fontSize = (barH * 0.86f).toSp(),
+                            fontWeight = FontWeight.Bold,
+                        ),
+                    )
+                    drawText(
+                        hpText,
+                        topLeft = Offset(
+                            c.x - hpText.size.width / 2f,
+                            barTl.y + (barH - hpText.size.height) / 2f,
+                        ),
+                        alpha = alpha,
+                    )
 
                     // Всплывающее число урона или лечения.
                     if (anim.popup.value < 1f && anim.popupValue != 0) {
                         val progress = anim.popup.value
-                        val text = if (anim.popupValue > 0) "+${anim.popupValue}" else "${anim.popupValue}"
+                        val sign = if (anim.popupValue > 0) "+${anim.popupValue}" else "${anim.popupValue}"
+                        val text = if (anim.popupCrit) "$sign!" else sign
                         val popup = measurer.measure(
                             text,
                             TextStyle(
-                                color = if (anim.popupValue > 0) Moss else Blood,
-                                fontSize = (cell * 0.28f).toSp(),
+                                color = when {
+                                    anim.popupCrit -> Ember
+                                    anim.popupValue > 0 -> Moss
+                                    else -> Blood
+                                },
+                                fontSize = (cell * if (anim.popupCrit) 0.42f else 0.28f).toSp(),
                                 fontWeight = FontWeight.Bold,
                             ),
                         )
@@ -500,31 +527,41 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
+
+            DetailOverlay(
+                battle = battle,
+                playerTurn = playerTurn,
+                skillMode = skillMode,
+                selected = battle.units.firstOrNull { it.id == selected },
+                inspected = battle.units.firstOrNull { it.id == inspected },
+                showLog = showLog,
+                onClearInspect = {
+                    inspected = null
+                    selected = null
+                },
+                onAttack = { target ->
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    inspected = null
+                    if (skillMode) {
+                        battle.useSkill(target)
+                        skillMode = false
+                    } else {
+                        battle.act(target)
+                    }
+                    selected = null
+                },
+            )
         }
 
         ActionPanel(
             battle = battle,
             playerTurn = playerTurn,
             skillMode = skillMode,
-            selected = battle.units.firstOrNull { it.id == selected },
-            inspected = battle.units.firstOrNull { it.id == inspected },
             showLog = showLog,
-            onClearInspect = { inspected = null },
             onToggleLog = { showLog = !showLog },
             onUndo = {
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 battle.undoMove()
-            },
-            onAttack = { target ->
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                inspected = null
-                if (skillMode) {
-                    battle.useSkill(target)
-                    skillMode = false
-                } else {
-                    battle.act(target)
-                }
-                selected = null
             },
             onSkill = {
                 val unit = battle.active ?: return@ActionPanel
@@ -549,7 +586,10 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             text = {
                 Text(
                     if (won) {
-                        "Раунд ${battle.round}. Раненые доберутся до привала."
+                        buildString {
+                            append("Раунд ${battle.round}. Раненые доберутся до привала.")
+                            if (battle.playerCrits > 0) append("\nКритов за бой: ${battle.playerCrits}.")
+                        }
                     } else {
                         "Забег окончен."
                     },
@@ -562,7 +602,12 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
 
 /** Держит анимации одного бойца в согласии с игровой моделью. */
 @Composable
-private fun UnitAnimator(unit: Combatant, anim: UnitAnim, haptics: HapticFeedback) {
+private fun UnitAnimator(
+    unit: Combatant,
+    anim: UnitAnim,
+    haptics: HapticFeedback,
+    battle: BattleState,
+) {
     LaunchedEffect(unit.pos) {
         val target = unit.pos.toOffset()
         if (anim.cell.value != target) {
@@ -575,6 +620,8 @@ private fun UnitAnimator(unit: Combatant, anim: UnitAnim, haptics: HapticFeedbac
         if (previous < 0 || unit.hp == previous) return@LaunchedEffect
 
         anim.popupValue = unit.hp - previous
+        // Здоровье меняется в том же действии, что и бросок, — так что это его крит.
+        anim.popupCrit = battle.lastRoll?.crit == true
         launch {
             anim.popup.snapTo(0f)
             anim.popup.animateTo(1f, tween(850))
@@ -657,18 +704,19 @@ private fun TurnOrderStrip(battle: BattleState) {
     }
 }
 
+/**
+ * Нижняя панель. Её высота не меняется ни между ходами, ни при открытых
+ * подсказках: всё, что появляется и исчезает, живёт поверх поля. Иначе поле
+ * сжимается, клетки съезжают, и тап попадает не туда.
+ */
 @Composable
 private fun ActionPanel(
     battle: BattleState,
     playerTurn: Boolean,
     skillMode: Boolean,
-    selected: Combatant?,
-    inspected: Combatant?,
     showLog: Boolean,
-    onClearInspect: () -> Unit,
     onToggleLog: () -> Unit,
     onUndo: () -> Unit,
-    onAttack: (Combatant) -> Unit,
     onSkill: () -> Unit,
 ) {
     val active = battle.active
@@ -677,20 +725,6 @@ private fun ActionPanel(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        AnimatedVisibility(visible = showLog) {
-            LogPanel(battle)
-        }
-
-        AnimatedVisibility(visible = inspected != null) {
-            inspected?.let {
-                UnitCard(
-                    facts = it.facts(),
-                    onClose = onClearInspect,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-            }
-        }
-
         AnimatedContent(
             targetState = active?.id to playerTurn,
             transitionSpec = {
@@ -700,86 +734,53 @@ private fun ActionPanel(
         ) { (_, isPlayer) ->
             val unit = battle.active
             Column {
-                if (unit == null) {
-                    Text("...", color = Steel)
-                } else {
-                    Text(
-                        if (isPlayer) "Ходит: ${unit.type.name}" else "Ход врага: ${unit.type.name}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (isPlayer) Ember else Blood,
-                    )
-                    Text(
+                Text(
+                    when {
+                        unit == null -> "…"
+                        isPlayer -> "Ходит: ${unit.type.name}"
+                        else -> "Ход врага: ${unit.type.name}"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isPlayer) Ember else Blood,
+                    maxLines = 1,
+                )
+                // Одна строка: подробности — в карточке по долгому нажатию.
+                Text(
+                    if (unit == null) {
+                        ""
+                    } else {
                         buildString {
                             append("HP ${unit.hp}/${unit.maxHp} · ⚔${unit.damage}")
                             if (unit.shield > 0) append(" · щит ${unit.shield}")
-                            append(" · дальность ${unit.type.range} · обзор ${unit.type.vision}")
-                            append(" · шагов ${battle.movesLeft}")
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Steel,
-                    )
-                }
+                            if (isPlayer) append(" · шагов ${battle.movesLeft}")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Steel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
 
         RollStrip(battle.lastRoll)
 
-        // Расчёт по цели, которую подержали пальцем.
-        val forecast = selected?.let { battle.forecast(it, withSkill = skillMode) }
-        AnimatedVisibility(visible = selected != null && forecast != null) {
-            if (selected != null && forecast != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(InkRaised)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "${selected.type.name} · ${selected.hp}/${selected.maxHp}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Bone,
-                        )
-                        Text(
-                            forecastText(forecast),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = when {
-                                forecast.healing -> Moss
-                                forecast.lethal -> Ember
-                                else -> Steel
-                            },
-                            fontWeight = if (forecast.lethal) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = { onAttack(selected) },
-                        enabled = playerTurn && battle.outcome == null,
-                    ) {
-                        Text(
-                            when {
-                                skillMode -> active?.skill?.name ?: "Применить"
-                                forecast.healing -> "Лечить"
-                                else -> "Ударить"
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
-        // Долгий тап никак не виден сам по себе — подсказываем, пока им не пользуются.
-        if (playerTurn && selected == null && battle.outcome == null) {
-            Text(
-                "Удержите бойца пальцем — покажу расчёт удара и карточку",
-                style = MaterialTheme.typography.labelSmall,
-                color = Steel.copy(alpha = 0.8f),
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
+        // Строка-подсказка всегда одной высоты: меняется текст, а не раскладка.
+        Text(
+            when {
+                battle.outcome != null -> ""
+                !playerTurn -> "Враг ходит…"
+                skillMode -> active?.skill?.description.orEmpty()
+                else -> "Тап — шаг или удар · удержите бойца — расчёт и карточка"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (skillMode && playerTurn) Arcane else Steel.copy(alpha = 0.8f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp),
+        )
 
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -800,6 +801,7 @@ private fun ActionPanel(
                             skillMode -> "Отмена"
                             else -> skill.name
                         },
+                        maxLines = 1,
                     )
                 }
             }
@@ -810,7 +812,11 @@ private fun ActionPanel(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = Bone,
                     ),
-                ) { Text("↶ Вернуть") }
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                ) {
+                    // В этом шрифте стрелка отмены мелкая — без размера она теряется в кнопке.
+                    Text("↶", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                }
             }
             Button(
                 onClick = { battle.endTurn() },
@@ -819,19 +825,10 @@ private fun ActionPanel(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = Bone,
                 ),
-            ) { Text("Конец хода") }
+            ) { Text("Конец хода", maxLines = 1) }
         }
 
-        if (playerTurn && skillMode && active?.skill != null) {
-            Text(
-                active.skill!!.description,
-                style = MaterialTheme.typography.labelSmall,
-                color = Arcane,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-
-        // Последняя строка журнала, по нажатию — весь журнал.
+        // Последняя строка журнала, по нажатию — весь журнал поверх поля.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -858,6 +855,106 @@ private fun ActionPanel(
     }
 }
 
+/**
+ * Карточка, расчёт удара и журнал — поверх поля. Прячутся в ту половину,
+ * где нет бойца, о котором речь: держишь своего внизу — карточка сверху.
+ */
+@Composable
+private fun BoxScope.DetailOverlay(
+    battle: BattleState,
+    playerTurn: Boolean,
+    skillMode: Boolean,
+    selected: Combatant?,
+    inspected: Combatant?,
+    showLog: Boolean,
+    onClearInspect: () -> Unit,
+    onAttack: (Combatant) -> Unit,
+) {
+    val focus = selected ?: inspected
+    val atTop = focus == null || focus.pos.y >= battle.height / 2
+    val forecast = selected?.let { battle.forecast(it, withSkill = skillMode) }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = showLog || inspected != null || forecast != null,
+        enter = fadeIn(tween(160)) + slideInVertically(tween(200)) { if (atTop) -it / 6 else it / 6 },
+        exit = fadeOut(tween(120)),
+        modifier = Modifier
+            .align(if (atTop) Alignment.TopCenter else Alignment.BottomCenter)
+            .padding(8.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (showLog) LogPanel(battle)
+            inspected?.let { UnitCard(it.facts(), onClose = onClearInspect) }
+            if (selected != null && forecast != null) {
+                ForecastRow(
+                    target = selected,
+                    forecast = forecast,
+                    actionName = when {
+                        skillMode -> battle.active?.skill?.name ?: "Применить"
+                        forecast.healing -> "Лечить"
+                        else -> "Ударить"
+                    },
+                    enabled = playerTurn && battle.outcome == null,
+                    onAttack = { onAttack(selected) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForecastRow(
+    target: Combatant,
+    forecast: BattleState.Forecast,
+    actionName: String,
+    enabled: Boolean,
+    onAttack: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(InkRaised)
+            .border(1.dp, if (forecast.lethal) Ember else InkLine, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${target.type.name} · ${target.hp}/${target.maxHp}",
+                style = MaterialTheme.typography.labelLarge,
+                color = Bone,
+            )
+            Text(
+                forecastText(forecast, target.hp),
+                style = MaterialTheme.typography.labelMedium,
+                color = when {
+                    forecast.healing -> Moss
+                    forecast.lethal -> Ember
+                    else -> Steel
+                },
+                fontWeight = if (forecast.lethal) FontWeight.Bold else FontWeight.Normal,
+            )
+            if (forecast.critChance > 0.0 && forecast.dice != "—") {
+                Text(
+                    "💥 крит ${percent(forecast.critChance)} → " +
+                        (if (forecast.healing) "+" else "−") + forecast.critAmount,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Ember,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = onAttack, enabled = enabled) { Text(actionName, maxLines = 1) }
+    }
+}
+
+/** «6%», а для совсем малых шансов — «<1%», чтобы не писать «0%» про возможное. */
+private fun percent(p: Double): String {
+    val v = (p * 100).roundToInt()
+    return if (v == 0 && p > 0.0) "<1%" else "$v%"
+}
+
 /** Выпавшие кости последнего удара: грани квадратиками, бонус и итог. */
 @Composable
 private fun RollStrip(report: BattleState.RollReport?) {
@@ -874,7 +971,12 @@ private fun RollStrip(report: BattleState.RollReport?) {
             Spacer(Modifier.height(30.dp))
             return@AnimatedContent
         }
-        val edge = if (r.friendly) Ember else Blood
+        // Крит подсвечивается золотом: его должно быть видно краем глаза.
+        val edge = when {
+            r.crit -> Gold
+            r.friendly -> Ember
+            else -> Blood
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -888,21 +990,25 @@ private fun RollStrip(report: BattleState.RollReport?) {
                 color = Steel,
                 maxLines = 1,
             )
-            r.roll.faces.forEach { face ->
+            r.roll.faces.forEachIndexed { i, face ->
                 Box(
                     modifier = Modifier
                         .size(24.dp)
                         .clip(RoundedCornerShape(5.dp))
-                        .background(InkRaised)
-                        .border(1.dp, edge, RoundedCornerShape(5.dp)),
+                        .background(if (r.crit) Gold.copy(alpha = 0.18f) else InkRaised)
+                        .border(if (r.crit) 2.dp else 1.dp, edge, RoundedCornerShape(5.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         "$face",
                         style = MaterialTheme.typography.labelLarge,
-                        color = Bone,
+                        color = if (r.crit) Gold else Bone,
                         fontWeight = FontWeight.Bold,
                     )
+                }
+                // Переброшенная счастливыми костями грань.
+                if (i in r.roll.rerolled) {
+                    Text("↻", style = MaterialTheme.typography.labelSmall, color = Moss)
                 }
             }
             val bonus = r.roll.dice.bonus
@@ -916,13 +1022,31 @@ private fun RollStrip(report: BattleState.RollReport?) {
             Text(
                 buildString {
                     append("= ${r.roll.total}")
-                    if (r.amount != r.roll.total) append(" → ${r.amount}")
+                    if (r.crit) append(" ×${r.critMultiplier}")
+                    if (r.amount != r.roll.total * r.critMultiplier) append(" → ${r.amount}")
+                    else if (r.crit) append(" = ${r.amount}")
                 },
                 style = MaterialTheme.typography.labelLarge,
-                color = if (r.healing) Moss else edge,
+                color = when {
+                    r.crit -> Gold
+                    r.healing -> Moss
+                    else -> edge
+                },
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
             )
+            if (r.crit) {
+                Text(
+                    "КРИТ",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Ink,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Gold)
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                )
+            }
         }
     }
 }
@@ -939,12 +1063,20 @@ private fun LogPanel(battle: BattleState) {
         state = state,
         modifier = Modifier
             .fillMaxWidth()
-            .height(150.dp)
-            .padding(bottom = 8.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(InkRaised)
+            .heightIn(max = 170.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(InkRaised.copy(alpha = 0.96f))
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
+        if (battle.log.isEmpty()) {
+            item {
+                Text(
+                    "Пока тихо — ходов ещё не было",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Steel.copy(alpha = 0.7f),
+                )
+            }
+        }
         items(battle.log.toList()) { line ->
             val isRound = line.startsWith("—")
             Text(
@@ -958,7 +1090,7 @@ private fun LogPanel(battle: BattleState) {
     }
 }
 
-private fun forecastText(f: BattleState.Forecast): String = buildString {
+private fun forecastText(f: BattleState.Forecast, targetHp: Int): String = buildString {
     fun span(a: Int, b: Int) = if (a == b) "$a" else "$a…$b"
 
     if (f.dice == "—") {
@@ -967,18 +1099,19 @@ private fun forecastText(f: BattleState.Forecast): String = buildString {
     }
     append("🎲 ${f.dice} · ")
     if (f.healing) {
-        append("вылечит на ${span(f.minAmount, f.maxAmount)}")
+        append("вылечит на ${span(f.plainMin, f.plainMax)}")
         if (f.extra.isNotEmpty()) append(" · ${f.extra}")
         return@buildString
     }
     if (f.absorbed > 0) append("щит съест до ${f.absorbed} · ")
-    append("−${span(f.minAmount, f.maxAmount)} HP")
+    // Разброс обычного удара; крит показан отдельной строкой.
+    append("−${span(f.plainMin, f.plainMax)} HP")
     when {
         f.lethal -> append(" · СМЕРТЕЛЬНО")
-        f.lethalChance > 0.0 -> {
-            append(" · убьёт с шансом ${(f.lethalChance * 100).roundToInt()}%")
-        }
-        else -> append(" · останется ${span(f.minRemaining, f.maxRemaining)}")
+        f.lethalChance > 0.0 -> append(" · убьёт с шансом ${percent(f.lethalChance)}")
+        else -> append(
+            " · останется ${span((targetHp - f.plainMax).coerceAtLeast(0), targetHp - f.plainMin)}",
+        )
     }
     if (f.splashMax > 0) append(" · соседям −${span(f.splashMin, f.splashMax)}")
     if (f.extra.isNotEmpty()) append(" · ${f.extra}")

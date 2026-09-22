@@ -14,6 +14,9 @@ val Blood = Color(0xFFC0453F)
 val Arcane = Color(0xFF9B7BD4)
 val Frost = Color(0xFF6FA8C7)
 
+/** Крит: золото, чтобы его было видно краем глаза. */
+val Gold = Color(0xFFFFC857)
+
 /** Цвета игрового поля. */
 object Field {
     val cell = Color(0xFF1E232E)

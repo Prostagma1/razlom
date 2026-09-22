@@ -64,6 +64,12 @@ class BattleState(
         movesLeft = turnStartMoves
     }
 
+    /**
+     * Зовётся, когда ход переходит к следующему бойцу. Игра пишет по нему
+     * сохранение: иначе убитый посреди боя процесс откатывал бой к началу.
+     */
+    var onTurnStart: (() -> Unit)? = null
+
     /** Очередь как список идентификаторов — для сохранения. */
     internal val queueIds: List<Int> get() = queue.toList()
 
@@ -217,6 +223,7 @@ class BattleState(
             movesLeft = unit.type.move + if (unit.team == Team.PLAYER && Relic.BOOTS in relics) 1 else 0
             turnStart = unit.pos
             turnStartMoves = movesLeft
+            onTurnStart?.invoke()
             return
         }
         checkOutcome()
@@ -338,6 +345,15 @@ class BattleState(
         }
     }
 
+    /** Как бросает кости этот боец: реликвии работают только на отряд. */
+    private fun rulesOf(unit: Combatant): RollRules {
+        if (unit.team != Team.PLAYER) return RollRules()
+        return RollRules(
+            rerollOnes = Relic.LUCKY_BONES in relics,
+            critMultiplier = if (Relic.JAGGED in relics) 3 else 2,
+        )
+    }
+
     /** Лечение с учётом знамени. */
     private fun healAmount(healer: Combatant, raw: Int): Int =
         if (healer.team == Team.PLAYER && Relic.BANNER in relics) raw * 3 / 2 else raw
@@ -352,17 +368,28 @@ class BattleState(
         val amount: Int,
         val target: String,
         val healing: Boolean,
-    )
+        /** Во сколько раз ударил крит; 1 — крита не было. */
+        val critMultiplier: Int = 1,
+    ) {
+        val crit: Boolean get() = critMultiplier > 1
+    }
 
     var lastRoll by mutableStateOf<RollReport?>(null)
         private set
 
+    /** Сколько критов выбросил отряд за бой — для итогов. */
+    var playerCrits by mutableIntStateOf(0)
+        private set
+
     /** Бросает кости удара, записывает бросок в журнал и отдаёт итог. */
     private fun rollHit(unit: Combatant, target: Combatant, hit: Hit, healing: Boolean): Int {
-        val roll = hit.dice.roll(rng)
-        val amount = hit.scale(roll.total)
+        val rules = rulesOf(unit)
+        val roll = hit.dice.roll(rng, rules)
+        val amount = hit.value(roll.total, rules)
+        val critNote = if (roll.crit) " 💥 КРИТ ×${rules.critMultiplier}" else ""
+        if (roll.crit && unit.team == Team.PLAYER) playerCrits++
         val note = if (amount != roll.total) " → $amount" else ""
-        log += "🎲 ${unit.type.name} ${hit.dice}: ${roll.describe()}$note"
+        log += "🎲 ${unit.type.name} ${hit.dice}: ${roll.describe()}$critNote$note"
         lastRoll = RollReport(
             seq = (lastRoll?.seq ?: 0) + 1,
             who = unit.type.name,
@@ -371,6 +398,7 @@ class BattleState(
             amount = amount,
             target = target.type.name,
             healing = healing,
+            critMultiplier = if (roll.crit) rules.critMultiplier else 1,
         )
         return amount
     }
@@ -410,6 +438,12 @@ class BattleState(
         val splashMax: Int,
         /** Что ещё повесит удар: яд, оглушение. */
         val extra: String,
+        /** Разброс без крита — его и показываем как обычный удар. */
+        val plainMin: Int = minAmount,
+        val plainMax: Int = maxAmount,
+        /** Шанс крита и сколько тогда снимет. */
+        val critChance: Double = 0.0,
+        val critAmount: Int = 0,
     ) {
         val lethal: Boolean get() = lethalChance >= 0.999
     }
@@ -457,42 +491,55 @@ class BattleState(
             )
         }
 
-        val outcomes = hit.distribution()
-        val splashMin = if (splashes) outcomes.keys.min().let { if (half) it / 2 else it } else 0
-        val splashMax = if (splashes) outcomes.keys.max().let { if (half) it / 2 else it } else 0
+        val outcomes = hit.outcomes(rulesOf(unit))
+        val plainValues = outcomes.filterNot { it.crit }.map { it.value }
+            .ifEmpty { outcomes.map { it.value } }
+        val critChance = outcomes.filter { it.crit }.sumOf { it.chance }
+        val splashMin = if (splashes) plainValues.min().let { if (half) it / 2 else it } else 0
+        val splashMax = if (splashes) plainValues.max().let { if (half) it / 2 else it } else 0
 
         if (healing) {
-            val healed = outcomes.keys.map { minOf(healAmount(unit, it), target.maxHp - target.hp) }
+            fun healed(value: Int) = minOf(healAmount(unit, value), target.maxHp - target.hp)
+            val all = outcomes.map { healed(it.value) }
+            val plain = plainValues.map { healed(it) }
             return Forecast(
                 healing = true,
                 dice = hit.dice.toString(),
-                minAmount = healed.min(),
-                maxAmount = healed.max(),
+                minAmount = all.min(),
+                maxAmount = all.max(),
                 absorbed = 0,
-                minRemaining = target.hp + healed.min(),
-                maxRemaining = target.hp + healed.max(),
+                minRemaining = target.hp + all.min(),
+                maxRemaining = target.hp + all.max(),
                 lethalChance = 0.0,
                 splashMin = 0,
                 splashMax = 0,
                 extra = extra,
+                plainMin = plain.min(),
+                plainMax = plain.max(),
+                critChance = critChance,
+                critAmount = outcomes.firstOrNull { it.crit }?.let { healed(it.value) } ?: 0,
             )
         }
 
         val saved = target.team == Team.PLAYER && Relic.TALISMAN in relics && !talismanSpent
         var lethal = 0.0
         var absorbedMax = 0
+        var critCut = 0
         val toHealth = mutableListOf<Int>()
+        val plainCut = mutableListOf<Int>()
         val remaining = mutableListOf<Int>()
-        for ((value, p) in outcomes) {
-            val incoming = value.coerceAtLeast(1)
+        for (o in outcomes) {
+            val incoming = o.value.coerceAtLeast(1)
             val absorbed = minOf(target.shield, incoming)
             absorbedMax = maxOf(absorbedMax, absorbed)
             val cut = incoming - absorbed
             val left = (target.hp - cut).coerceAtLeast(0)
             toHealth += cut
+            if (o.crit) critCut = cut else plainCut += cut
             remaining += if (left == 0 && saved) 1 else left
-            if (left == 0 && !saved) lethal += p
+            if (left == 0 && !saved) lethal += o.chance
         }
+        if (plainCut.isEmpty()) plainCut += toHealth
 
         return Forecast(
             healing = false,
@@ -506,6 +553,10 @@ class BattleState(
             splashMin = splashMin,
             splashMax = splashMax,
             extra = extra,
+            plainMin = plainCut.min(),
+            plainMax = plainCut.max(),
+            critChance = critChance,
+            critAmount = critCut,
         )
     }
 
