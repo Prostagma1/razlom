@@ -98,7 +98,12 @@ fun PartyBar(party: List<Hero>, modifier: Modifier = Modifier) {
                     color = if (wounded) Ember else MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "${hero.hp}/${hero.maxHp} · ⚔${hero.attack}",
+                    "${hero.hp}/${hero.maxHp} HP",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "⚔${hero.damage}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

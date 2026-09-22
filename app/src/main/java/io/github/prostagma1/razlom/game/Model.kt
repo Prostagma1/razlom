@@ -104,8 +104,10 @@ data class UnitType(
     val id: String,
     val name: String,
     val glyph: String,
-    val maxHp: Int,
-    val attack: Int,
+    /** Здоровье бросается один раз — когда боец появляется. */
+    val hp: Dice,
+    /** Урон бросается на каждом ударе. */
+    val damage: Dice,
     val range: Int,
     val move: Int,
     val speed: Int,
@@ -118,32 +120,32 @@ data class UnitType(
 
 object Roster {
     val LATNIK = UnitType(
-        "latnik", "Латник", "Л", 34, 8, 1, 3, 4, vision = 3, ability = Ability.NONE,
+        "latnik", "Латник", "Л", Dice(3, 6, 23), Dice(2, 4, 3), 1, 3, 4, vision = 3, ability = Ability.NONE,
         active = ActiveSkill(SkillKind.GUARD, "Стена", 3, 0, SkillTarget.SELF, "Щит 10 себе и соседним союзникам"),
         hint = "Толстый, бьёт вплотную",
     )
     val KOPEYSHCHIK = UnitType(
-        "kopye", "Копейщик", "К", 26, 7, 2, 3, 5, vision = 4, ability = Ability.PIERCE,
+        "kopye", "Копейщик", "К", Dice(3, 6, 15), Dice(2, 4, 2), 2, 3, 5, vision = 4, ability = Ability.PIERCE,
         active = ActiveSkill(SkillKind.TRIP, "Подсечка", 3, 2, SkillTarget.ENEMY, "Удар и оглушение на ход"),
         hint = "Достаёт через клетку и пробивает насквозь",
     )
     val LUCHNIK = UnitType(
-        "luchnik", "Лучник", "Ц", 18, 6, 4, 2, 6, vision = 6, ability = Ability.NONE,
+        "luchnik", "Лучник", "Ц", Dice(2, 6, 11), Dice(1, 8, 1), 4, 2, 6, vision = 6, ability = Ability.NONE,
         active = ActiveSkill(SkillKind.VOLLEY, "Прицельный", 2, 4, SkillTarget.ENEMY, "Выстрел на 180% урона"),
         hint = "Стреляет далеко, умирает быстро",
     )
     val MAG = UnitType(
-        "mag", "Маг", "М", 16, 9, 3, 2, 3, vision = 5, ability = Ability.SPLASH,
+        "mag", "Маг", "М", Dice(2, 6, 9), Dice(2, 6, 2), 3, 2, 3, vision = 5, ability = Ability.SPLASH,
         active = ActiveSkill(SkillKind.FIRESTORM, "Вихрь", 3, 3, SkillTarget.ENEMY, "Полный урон цели и всем врагам рядом с ней"),
         hint = "Задевает всех рядом с целью",
     )
     val ZNAHAR = UnitType(
-        "znahar", "Знахарь", "З", 20, 9, 3, 3, 7, vision = 4, ability = Ability.HEAL,
+        "znahar", "Знахарь", "З", Dice(2, 6, 13), Dice(2, 4, 4), 3, 3, 7, vision = 4, ability = Ability.HEAL,
         active = ActiveSkill(SkillKind.TONIC, "Отвар", 2, 3, SkillTarget.ALLY, "Лечит на 150% и снимает яд с оглушением"),
         hint = "Лечит союзников вместо атаки",
     )
     val RAZBOYNIK = UnitType(
-        "razboy", "Разбойник", "Р", 22, 7, 1, 5, 8, vision = 5, ability = Ability.FLANK,
+        "razboy", "Разбойник", "Р", Dice(2, 6, 15), Dice(2, 6, 0), 1, 5, 8, vision = 5, ability = Ability.FLANK,
         active = ActiveSkill(SkillKind.POISON_BLADE, "Яд на клинок", 2, 1, SkillTarget.ENEMY, "Удар и яд на три хода"),
         hint = "Быстрый; бьёт сильнее в паре",
     )
@@ -153,19 +155,19 @@ object Roster {
 
     fun byId(id: String): UnitType? = recruitable.firstOrNull { it.id == id }
 
-    val GHOUL = UnitType("ghoul", "Упырь", "у", 20, 6, 1, 4, 5, vision = 4)
-    val BONE_ARCHER = UnitType("bonearcher", "Костяной стрелок", "с", 14, 5, 4, 2, 6, vision = 6)
-    val MARAUDER = UnitType("marauder", "Мародёр", "м", 26, 7, 1, 3, 4, vision = 4)
+    val GHOUL = UnitType("ghoul", "Упырь", "у", Dice(2, 6, 13), Dice(1, 6, 2), 1, 4, 5, vision = 4)
+    val BONE_ARCHER = UnitType("bonearcher", "Костяной стрелок", "с", Dice(2, 6, 7), Dice(1, 6, 1), 4, 2, 6, vision = 6)
+    val MARAUDER = UnitType("marauder", "Мародёр", "м", Dice(3, 6, 15), Dice(2, 4, 2), 1, 3, 4, vision = 4)
     val SPITTER = UnitType(
-        "spitter", "Плевун", "п", 16, 7, 3, 2, 3, vision = 5, ability = Ability.SPLASH,
+        "spitter", "Плевун", "п", Dice(2, 6, 9), Dice(1, 8, 2), 3, 2, 3, vision = 5, ability = Ability.SPLASH,
         active = ActiveSkill(SkillKind.SPIT, "Едкий плевок", 3, 3, SkillTarget.ENEMY, "Урон и яд"),
     )
     val HOWLER = UnitType(
-        "howler", "Вопящий", "в", 22, 6, 2, 4, 7, vision = 5, ability = Ability.FLANK,
+        "howler", "Вопящий", "в", Dice(2, 6, 15), Dice(1, 6, 2), 2, 4, 7, vision = 5, ability = Ability.FLANK,
         active = ActiveSkill(SkillKind.HOWL, "Вой", 3, 2, SkillTarget.ENEMY, "Оглушение"),
     )
     val DEVOURER = UnitType(
-        "devourer", "Пожиратель", "П", 90, 12, 2, 3, 5, vision = 6, ability = Ability.SPLASH,
+        "devourer", "Пожиратель", "П", Dice(6, 6, 69), Dice(2, 8, 3), 2, 3, 5, vision = 6, ability = Ability.SPLASH,
         active = ActiveSkill(SkillKind.RIFT, "Разлом", 4, 2, SkillTarget.ENEMY, "Урон по площади и оглушение"),
     )
 
@@ -184,7 +186,8 @@ class Combatant(
     val type: UnitType,
     val team: Team,
     val maxHp: Int,
-    baseAttack: Int,
+    /** Кости урона бойца до боевых прибавок: тип плюс улучшения отряда. */
+    internal val baseDamage: Dice,
     hp: Int,
     pos: Pos,
     /** Ссылка на героя отряда, чтобы перенести здоровье обратно после боя. */
@@ -205,9 +208,8 @@ class Combatant(
     /** Статус и сколько ходов он ещё продержится. */
     val statuses = mutableStateMapOf<Status, Int>()
 
-    private val baseAttack = baseAttack
-
-    val attack: Int get() = baseAttack + battleAtk
+    /** Что бросает боец прямо сейчас, с прибавками боя. */
+    val damage: Dice get() = baseDamage.plus(battleAtk)
     val alive: Boolean get() = hp > 0
     val speed: Int get() = type.speed
     val skill: ActiveSkill? get() = type.active

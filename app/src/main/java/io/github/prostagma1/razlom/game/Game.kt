@@ -76,7 +76,7 @@ class Game(
     fun newRun(squad: Squad = Squads.ZASTAVA) {
         lastSquad = squad
         party.clear()
-        squad.members.forEach { party += Hero(nextHeroUid++, it) }
+        squad.members.forEach { party += Hero.recruit(nextHeroUid++, it, rng) }
         relics.clear()
         gold = 0
         map = MapGenerator.generate(rng)
@@ -88,7 +88,8 @@ class Game(
         rewards = emptyList()
         shop = emptyList()
         unlocked = emptyList()
-        notice = "Отряд «${squad.name}» выступает в путь"
+        notice = "Отряд «${squad.name}» выступает в путь · HP " +
+            party.joinToString(" / ") { "${it.maxHp}" }
         profile.startRun()
         screen = Screen.MAP
         saveProfile()
@@ -201,9 +202,12 @@ class Game(
     }
 
     fun takeReward(reward: Reward) {
+        var rolled: String? = null
         when (reward) {
             is Reward.Recruit -> if (party.size < Encounters.MAX_PARTY) {
-                party += Hero(nextHeroUid++, reward.type)
+                val hero = Hero.recruit(nextHeroUid++, reward.type, rng)
+                party += hero
+                rolled = rolledNotice(hero)
             }
 
             is Reward.Trophy -> if (reward.relic !in relics) relics += reward.relic
@@ -216,7 +220,7 @@ class Game(
 
             Reward.FullHeal -> party.forEach { it.heal(it.maxHp) }
         }
-        notice = reward.title
+        notice = rolled ?: reward.title
         rewards = emptyList()
         openNextChoices(currentNodeId?.let { map.nodes[it] })
     }
@@ -235,7 +239,9 @@ class Game(
 
             is ShopOffer.Hire -> {
                 if (party.size >= Encounters.MAX_PARTY) return
-                party += Hero(nextHeroUid++, offer.type)
+                val hero = Hero.recruit(nextHeroUid++, offer.type, rng)
+                party += hero
+                notice = rolledNotice(hero)
             }
 
             ShopOffer.Mend -> party.forEach { it.heal(it.maxHp) }
@@ -245,6 +251,10 @@ class Game(
         shop = shop - offer
         save()
     }
+
+    /** «Нанят Лучник: на костях 2к6+11 выпало 21 HP» — удача видна сразу. */
+    private fun rolledNotice(hero: Hero): String =
+        "Нанят ${hero.type.name}: на костях ${hero.type.hp} выпало ${hero.baseHp} HP"
 
     fun leaveShop() {
         shop = emptyList()

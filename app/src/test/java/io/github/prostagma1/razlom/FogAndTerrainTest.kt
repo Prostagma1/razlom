@@ -20,7 +20,7 @@ import kotlin.random.Random
 class FogAndTerrainTest {
 
     private fun fighter(id: Int, type: UnitType, team: Team, pos: Pos) =
-        Combatant(id, type, team, type.maxHp, type.attack, type.maxHp, pos)
+        Combatant(id, type, team, type.hp.nominal, type.damage, type.hp.nominal, pos)
 
     /** Стена во всю ширину, кроме одного прохода справа. */
     private fun wall(y: Int, width: Int, gap: Int) =

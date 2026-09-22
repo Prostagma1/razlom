@@ -6,10 +6,13 @@ package io.github.prostagma1.razlom.game
  * Повторяющиеся ключи означают список.
  */
 object SaveCodec {
-    private const val VERSION = 3
+    private const val VERSION = 4
 
-    /** Что умеем читать. Второй формат знал только сплошные препятствия. */
-    private val SUPPORTED = setOf(2, 3)
+    /**
+     * Что умеем читать. Второй формат знал только сплошные препятствия,
+     * третий — ровный урон без костей и HP без броска.
+     */
+    private val SUPPORTED = setOf(2, 3, 4)
 
     // ---- профиль -------------------------------------------------------
 
@@ -46,7 +49,9 @@ object SaveCodec {
         appendLine("available=${game.available.joinToString(",")}")
 
         game.party.forEach {
-            appendLine("hero=${it.uid}|${it.type.id}|${it.bonusHp}|${it.bonusAtk}|${it.hp}")
+            appendLine(
+                "hero=${it.uid}|${it.type.id}|${it.bonusHp}|${it.bonusAtk}|${it.hp}|${it.baseHp}",
+            )
         }
         game.map.rows.forEach { row ->
             appendLine("mrow=${row.joinToString(",") { it.id.toString() }}")
@@ -106,7 +111,14 @@ object SaveCodec {
         many("hero").forEach { raw ->
             val f = raw.split('|')
             val type = Roster.byId(f[1]) ?: return@runCatching false
-            game.party += Hero(f[0].toInt(), type, f[2].toInt(), f[3].toInt())
+            // До костей здоровье было ровным — берём среднее костей, оно совпадает со старым.
+            game.party += Hero(
+                uid = f[0].toInt(),
+                type = type,
+                baseHp = f.getOrNull(5)?.toIntOrNull() ?: type.hp.nominal,
+                bonusHp = f[2].toInt(),
+                bonusAtk = f[3].toInt(),
+            )
                 .also { it.hp = f[4].toInt() }
         }
         if (game.party.isEmpty()) return@runCatching false
@@ -171,7 +183,7 @@ object SaveCodec {
         val statuses = u.statuses.filterValues { it > 0 }.entries
             .joinToString(",") { "${it.key.name}:${it.value}" }
         return listOf(
-            u.id, u.type.id, u.team.name, u.maxHp, u.attack - u.battleAtk, u.hp,
+            u.id, u.type.id, u.team.name, u.maxHp, u.baseDamage.encode(), u.hp,
             u.pos.x, u.pos.y, u.heroUid ?: -1, u.shield, u.battleAtk, u.cooldown, statuses,
         ).joinToString("|")
     }
@@ -183,7 +195,8 @@ object SaveCodec {
             type = Roster.anyById(f[1]) ?: error("неизвестный боец ${f[1]}"),
             team = Team.valueOf(f[2]),
             maxHp = f[3].toInt(),
-            baseAttack = f[4].toInt(),
+            // В старых сохранениях здесь ровное число: бой доиграется без костей.
+            baseDamage = Dice.parse(f[4]) ?: error("не понял урон ${f[4]}"),
             hp = f[5].toInt(),
             pos = Pos(f[6].toInt(), f[7].toInt()),
             heroUid = f[8].toInt().takeIf { it >= 0 },

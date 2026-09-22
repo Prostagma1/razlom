@@ -5,22 +5,36 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import kotlin.random.Random
 
-/** Боец отряда: живёт между боями, копит улучшения и раны. */
+/**
+ * Боец отряда: живёт между боями, копит улучшения и раны. Здоровье
+ * выбрасывается костями один раз, при найме, и дальше остаётся его собственным:
+ * два латника в одном отряде могут оказаться очень разными.
+ */
 class Hero(
     val uid: Int,
     val type: UnitType,
+    /** Что выпало на костях здоровья при найме. */
+    val baseHp: Int = type.hp.nominal,
     bonusHp: Int = 0,
     bonusAtk: Int = 0,
 ) {
     var bonusHp by mutableIntStateOf(bonusHp)
     var bonusAtk by mutableIntStateOf(bonusAtk)
-    var hp by mutableIntStateOf(type.maxHp + bonusHp)
+    var hp by mutableIntStateOf(baseHp + bonusHp)
 
-    val maxHp: Int get() = type.maxHp + bonusHp
-    val attack: Int get() = type.attack + bonusAtk
+    val maxHp: Int get() = baseHp + bonusHp
+
+    /** Кости урона с улучшениями: «+2 к атаке» прибавляется к броску. */
+    val damage: Dice get() = type.damage.plus(bonusAtk)
 
     fun heal(amount: Int) {
         hp = (hp + amount).coerceIn(0, maxHp)
+    }
+
+    companion object {
+        /** Нанять бойца: бросаем его кости здоровья. */
+        fun recruit(uid: Int, type: UnitType, rng: Random): Hero =
+            Hero(uid, type, baseHp = type.hp.roll(rng).total)
     }
 }
 
@@ -101,7 +115,7 @@ sealed interface Reward {
     data class Recruit(val type: UnitType) : Reward {
         override val title = "Нанять: ${type.name}"
         override val description =
-            "${type.hint}. HP ${type.maxHp}, атака ${type.attack}, дальность ${type.range}, ход ${type.move}"
+            "${type.hint}. HP ${type.hp}, урон ${type.damage}, дальность ${type.range}, ход ${type.move}"
     }
 
     data class Trophy(val relic: Relic) : Reward {
@@ -111,7 +125,7 @@ sealed interface Reward {
 
     data object PartyAttack : Reward {
         override val title = "Точильный камень"
-        override val description = "+2 к атаке всему отряду"
+        override val description = "+2 к каждому броску урона всего отряда"
     }
 
     data object PartyHealth : Reward {
@@ -140,7 +154,7 @@ sealed interface ShopOffer {
     data class Hire(val type: UnitType) : ShopOffer {
         override val title = "Нанять: ${type.name}"
         override val description =
-            "${type.hint}. HP ${type.maxHp}, атака ${type.attack}, дальность ${type.range}"
+            "${type.hint}. HP ${type.hp}, урон ${type.damage}, дальность ${type.range}"
         override val price = 45
     }
 
@@ -152,7 +166,7 @@ sealed interface ShopOffer {
 
     data object Whetstone : ShopOffer {
         override val title = "Заточка"
-        override val description = "+2 к атаке всему отряду"
+        override val description = "+2 к каждому броску урона всего отряда"
         override val price = 40
     }
 }

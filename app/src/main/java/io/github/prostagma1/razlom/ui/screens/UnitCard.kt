@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.prostagma1.razlom.game.Ability
 import io.github.prostagma1.razlom.game.Combatant
+import io.github.prostagma1.razlom.game.Dice
 import io.github.prostagma1.razlom.game.Hero
 import io.github.prostagma1.razlom.game.Status
 import io.github.prostagma1.razlom.game.Team
@@ -42,7 +43,7 @@ data class UnitFacts(
     val type: UnitType,
     val hp: Int,
     val maxHp: Int,
-    val attack: Int,
+    val damage: Dice,
     val friendly: Boolean,
     val shield: Int = 0,
     val cooldown: Int = 0,
@@ -53,7 +54,7 @@ fun Combatant.facts() = UnitFacts(
     type = type,
     hp = hp,
     maxHp = maxHp,
-    attack = attack,
+    damage = damage,
     friendly = team == Team.PLAYER,
     shield = shield,
     cooldown = cooldown,
@@ -64,7 +65,7 @@ fun Hero.facts() = UnitFacts(
     type = type,
     hp = hp,
     maxHp = maxHp,
-    attack = attack,
+    damage = damage,
     friendly = true,
 )
 
@@ -106,12 +107,20 @@ fun UnitCard(facts: UnitFacts, onClose: (() -> Unit)? = null, modifier: Modifier
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("Урон", "${facts.attack}")
+            Stat("Урон", "${facts.damage}")
             Stat("Дальность", "${facts.type.range}")
             Stat("Ход", "${facts.type.move}")
             Stat("Обзор", "${facts.type.vision}")
             Stat("Скорость", "${facts.type.speed}")
         }
+
+        Text(
+            "Кости: здоровье ${facts.type.hp}, урон ${facts.damage} · " +
+                "удар бьёт от ${facts.damage.min} до ${facts.damage.max}",
+            style = MaterialTheme.typography.labelSmall,
+            color = Steel,
+            modifier = Modifier.padding(top = 6.dp),
+        )
 
         if (facts.type.ability != Ability.NONE) {
             Spacer(Modifier.height(8.dp))

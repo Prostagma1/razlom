@@ -15,6 +15,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.animation.scaleIn
+import androidx.compose.foundation.border
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -90,6 +92,7 @@ import io.github.prostagma1.razlom.ui.theme.Frost
 import io.github.prostagma1.razlom.ui.theme.Moss
 import io.github.prostagma1.razlom.ui.theme.Steel
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 @Composable
@@ -156,6 +159,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
         }
     }
 
+    val healer = active?.type?.ability == Ability.HEAL
     val skillAims = if (playerTurn && skillMode) battle.skillTargets() else emptyList()
     val skillCells = skillAims.map { it.pos }.toSet()
     val reachable = if (playerTurn && !skillMode) battle.reachable() else emptyMap()
@@ -328,8 +332,11 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
                             drawRect(Field.skill.copy(alpha = 0.5f + 0.35f * pulse), tl, Size(cell, cell))
                             drawRect(Arcane.copy(alpha = 0.5f + 0.5f * pulse), tl, Size(cell, cell), style = Stroke(3f))
                         } else if (p in targets) {
-                            drawRect(Field.threat.copy(alpha = 0.45f + 0.4f * pulse), tl, Size(cell, cell))
-                            drawRect(Blood.copy(alpha = 0.5f + 0.5f * pulse), tl, Size(cell, cell), style = Stroke(3f))
+                            // Цель лечения — свой, красить его как врага нельзя.
+                            val mark = if (healer) Moss else Blood
+                            val fill = if (healer) Moss.copy(alpha = 0.18f + 0.2f * pulse) else Field.threat.copy(alpha = 0.45f + 0.4f * pulse)
+                            drawRect(fill, tl, Size(cell, cell))
+                            drawRect(mark.copy(alpha = 0.5f + 0.5f * pulse), tl, Size(cell, cell), style = Stroke(3f))
                         } else if (p in reachable) {
                             drawRect(Field.reachable.copy(alpha = 0.5f + 0.25f * pulse), tl, Size(cell, cell))
                         }
@@ -510,6 +517,7 @@ fun BattleScreen(battle: BattleState, onFinished: () -> Unit) {
             },
             onAttack = { target ->
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                inspected = null
                 if (skillMode) {
                     battle.useSkill(target)
                     skillMode = false
@@ -702,7 +710,7 @@ private fun ActionPanel(
                     )
                     Text(
                         buildString {
-                            append("HP ${unit.hp}/${unit.maxHp} · ⚔${unit.attack}")
+                            append("HP ${unit.hp}/${unit.maxHp} · ⚔${unit.damage}")
                             if (unit.shield > 0) append(" · щит ${unit.shield}")
                             append(" · дальность ${unit.type.range} · обзор ${unit.type.vision}")
                             append(" · шагов ${battle.movesLeft}")
@@ -713,6 +721,8 @@ private fun ActionPanel(
                 }
             }
         }
+
+        RollStrip(battle.lastRoll)
 
         // Расчёт по цели, которую подержали пальцем.
         val forecast = selected?.let { battle.forecast(it, withSkill = skillMode) }
@@ -848,6 +858,75 @@ private fun ActionPanel(
     }
 }
 
+/** Выпавшие кости последнего удара: грани квадратиками, бонус и итог. */
+@Composable
+private fun RollStrip(report: BattleState.RollReport?) {
+    AnimatedContent(
+        targetState = report,
+        contentKey = { it?.seq },
+        transitionSpec = {
+            (fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.85f)) togetherWith
+                fadeOut(tween(120))
+        },
+        label = "roll",
+    ) { r ->
+        if (r == null) {
+            Spacer(Modifier.height(30.dp))
+            return@AnimatedContent
+        }
+        val edge = if (r.friendly) Ember else Blood
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(30.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "${r.who} ${r.roll.dice}:",
+                style = MaterialTheme.typography.labelMedium,
+                color = Steel,
+                maxLines = 1,
+            )
+            r.roll.faces.forEach { face ->
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(InkRaised)
+                        .border(1.dp, edge, RoundedCornerShape(5.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "$face",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Bone,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            val bonus = r.roll.dice.bonus
+            if (bonus != 0) {
+                Text(
+                    if (bonus > 0) "+$bonus" else "$bonus",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Steel,
+                )
+            }
+            Text(
+                buildString {
+                    append("= ${r.roll.total}")
+                    if (r.amount != r.roll.total) append(" → ${r.amount}")
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = if (r.healing) Moss else edge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 /** Весь журнал боя: прокручивается, свежие записи внизу. */
 @Composable
 private fun LogPanel(battle: BattleState) {
@@ -880,16 +959,29 @@ private fun LogPanel(battle: BattleState) {
 }
 
 private fun forecastText(f: BattleState.Forecast): String = buildString {
-    if (f.healing) {
-        append("вылечит на ${f.amount}")
-        if (f.extra.isNotEmpty()) append(" · ${f.extra}")
-    } else {
-        if (f.absorbed > 0) append("щит съест ${f.absorbed} · ")
-        append("−${f.amount} HP")
-        append(if (f.lethal) " · СМЕРТЕЛЬНО" else " · останется ${f.remaining}")
-        if (f.splash > 0) append(" · соседям −${f.splash}")
-        if (f.extra.isNotEmpty()) append(" · ${f.extra}")
+    fun span(a: Int, b: Int) = if (a == b) "$a" else "$a…$b"
+
+    if (f.dice == "—") {
+        append(f.extra.ifEmpty { "без броска" })
+        return@buildString
     }
+    append("🎲 ${f.dice} · ")
+    if (f.healing) {
+        append("вылечит на ${span(f.minAmount, f.maxAmount)}")
+        if (f.extra.isNotEmpty()) append(" · ${f.extra}")
+        return@buildString
+    }
+    if (f.absorbed > 0) append("щит съест до ${f.absorbed} · ")
+    append("−${span(f.minAmount, f.maxAmount)} HP")
+    when {
+        f.lethal -> append(" · СМЕРТЕЛЬНО")
+        f.lethalChance > 0.0 -> {
+            append(" · убьёт с шансом ${(f.lethalChance * 100).roundToInt()}%")
+        }
+        else -> append(" · останется ${span(f.minRemaining, f.maxRemaining)}")
+    }
+    if (f.splashMax > 0) append(" · соседям −${span(f.splashMin, f.splashMax)}")
+    if (f.extra.isNotEmpty()) append(" · ${f.extra}")
 }
 
 private fun abilityHint(ability: Ability) = when (ability) {

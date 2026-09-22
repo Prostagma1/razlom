@@ -16,7 +16,7 @@ import org.junit.Test
 class BattleTest {
 
     private fun fighter(id: Int, type: io.github.prostagma1.razlom.game.UnitType, team: Team, pos: Pos) =
-        Combatant(id, type, team, type.maxHp, type.attack, type.maxHp, pos)
+        Combatant(id, type, team, type.hp.nominal, type.damage, type.hp.nominal, pos)
 
     /** Латник (скорость 4) против Плевуна (скорость 3): первым ходит латник. */
     private fun duel(): BattleState = BattleState(
@@ -72,7 +72,8 @@ class BattleTest {
         val victim = battle.units.first { it.team == Team.ENEMY }
         battle.act(victim)
 
-        assertEquals(Roster.SPITTER.maxHp - Roster.LATNIK.attack, victim.hp)
+        val lost = Roster.SPITTER.hp.nominal - victim.hp
+        assertTrue("урон $lost вне костей ${Roster.LATNIK.damage}", lost in Roster.LATNIK.damage.min..Roster.LATNIK.damage.max)
         assertEquals(Team.ENEMY, battle.active?.team)
     }
 
@@ -88,7 +89,8 @@ class BattleTest {
         assertFalse(battle.canTarget(healer, foe))
 
         battle.act(wounded)
-        assertEquals(5 + Roster.ZNAHAR.attack, wounded.hp)
+        val healed = wounded.hp - 5
+        assertTrue("лечение $healed вне костей", healed in Roster.ZNAHAR.damage.min..Roster.ZNAHAR.damage.max)
     }
 
     @Test
@@ -99,8 +101,11 @@ class BattleTest {
         val battle = BattleState(5, 5, listOf(mage, target, neighbour), emptyMap())
 
         battle.act(target)
-        assertEquals(Roster.SPITTER.maxHp - Roster.MAG.attack, target.hp)
-        assertEquals(Roster.SPITTER.maxHp - Roster.MAG.attack / 2, neighbour.hp)
+        val main = Roster.SPITTER.hp.nominal - target.hp
+        val side = Roster.SPITTER.hp.nominal - neighbour.hp
+        assertTrue(main in Roster.MAG.damage.min..Roster.MAG.damage.max)
+        // Кости бросаются один раз: сосед получает ровно половину того же броска.
+        assertEquals(main / 2, side)
     }
 
     @Test

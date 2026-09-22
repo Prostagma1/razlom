@@ -16,7 +16,7 @@ import org.junit.Test
 class StatusAndSkillTest {
 
     private fun fighter(id: Int, type: UnitType, team: Team, pos: Pos) =
-        Combatant(id, type, team, type.maxHp, type.attack, type.maxHp, pos)
+        Combatant(id, type, team, type.hp.nominal, type.damage, type.hp.nominal, pos)
 
     @Test
     fun `яд бьёт в начале хода и через три хода спадает`() {
@@ -77,7 +77,9 @@ class StatusAndSkillTest {
 
         battle.useSkill(wounded)
 
-        assertEquals(5 + Roster.ZNAHAR.attack * 3 / 2, wounded.hp)
+        val healed = wounded.hp - 5
+        val dice = Roster.ZNAHAR.damage
+        assertTrue("отвар $healed вне костей", healed in dice.min * 3 / 2..dice.max * 3 / 2)
         assertFalse(wounded.has(Status.POISON))
     }
 

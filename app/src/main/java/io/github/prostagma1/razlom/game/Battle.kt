@@ -23,6 +23,8 @@ class BattleState(
     val terrain: Map<Pos, Terrain>,
     val relics: Set<Relic> = emptySet(),
     restore: Restore? = null,
+    /** Откуда берутся броски костей. Тесты подставляют свой, с зерном. */
+    private val rng: Random = Random.Default,
 ) {
     /** Снимок незаконченного боя, поднятый из сохранения. */
     data class Restore(
@@ -303,42 +305,75 @@ class BattleState(
 
     // ---- атака ---------------------------------------------------------
 
-    /** Урон бойца с учётом реликвий, действующих прямо сейчас. */
-    private fun power(unit: Combatant): Int {
+    /** Кости бойца с учётом реликвий, действующих прямо сейчас. */
+    private fun damageOf(unit: Combatant): Dice {
         val warStone = unit.team == Team.PLAYER && Relic.WAR_STONE in relics && round == 1
-        return unit.attack + if (warStone) 3 else 0
+        return unit.damage.plus(if (warStone) 3 else 0)
     }
 
     /**
-     * Сколько придётся по главной цели обычной атакой. Одна формула и для
-     * удара, и для предпросмотра — иначе цифры на экране разойдутся с боем.
+     * Чем бьёт боец обычной атакой по этой цели. Одна формула и для удара,
+     * и для предпросмотра — иначе цифры на экране разойдутся с боем.
      */
-    private fun mainAmount(attacker: Combatant, target: Combatant): Int =
-        when (attacker.type.ability) {
-            Ability.FLANK -> {
-                val supported = units.any {
-                    it.alive && it.team == attacker.team && it.id != attacker.id &&
-                        it.pos.reach(target.pos) == 1
-                }
-                if (supported) power(attacker) * 3 / 2 else power(attacker)
-            }
-
-            else -> power(attacker)
+    private fun mainHit(attacker: Combatant, target: Combatant): Hit {
+        val dice = damageOf(attacker)
+        if (attacker.type.ability != Ability.FLANK) return Hit(dice)
+        val supported = units.any {
+            it.alive && it.team == attacker.team && it.id != attacker.id &&
+                it.pos.reach(target.pos) == 1
         }
+        return if (supported) Hit(dice) { it * 3 / 2 } else Hit(dice)
+    }
 
-    /** Сколько придётся по главной цели способностью. */
-    private fun skillAmount(unit: Combatant, kind: SkillKind): Int = when (kind) {
-        SkillKind.VOLLEY -> power(unit) * 9 / 5
-        SkillKind.SPIT -> power(unit) * 4 / 5
-        SkillKind.RIFT -> power(unit) * 6 / 5
-        SkillKind.TONIC -> power(unit) * 3 / 2
-        SkillKind.TRIP, SkillKind.POISON_BLADE, SkillKind.FIRESTORM -> power(unit)
-        SkillKind.GUARD, SkillKind.HOWL -> 0
+    /** Чем бьёт способность; null — если способность ничего не бросает. */
+    private fun skillHit(unit: Combatant, kind: SkillKind): Hit? {
+        val dice = damageOf(unit)
+        return when (kind) {
+            SkillKind.VOLLEY -> Hit(dice) { it * 9 / 5 }
+            SkillKind.SPIT -> Hit(dice) { it * 4 / 5 }
+            SkillKind.RIFT -> Hit(dice) { it * 6 / 5 }
+            SkillKind.TONIC -> Hit(dice) { it * 3 / 2 }
+            SkillKind.TRIP, SkillKind.POISON_BLADE, SkillKind.FIRESTORM -> Hit(dice)
+            SkillKind.GUARD, SkillKind.HOWL -> null
+        }
     }
 
     /** Лечение с учётом знамени. */
     private fun healAmount(healer: Combatant, raw: Int): Int =
         if (healer.team == Team.PLAYER && Relic.BANNER in relics) raw * 3 / 2 else raw
+
+    /** Последний бросок — интерфейс показывает выпавшие грани. */
+    data class RollReport(
+        val seq: Int,
+        val who: String,
+        val friendly: Boolean,
+        val roll: Roll,
+        /** Во что бросок превратился после множителей. */
+        val amount: Int,
+        val target: String,
+        val healing: Boolean,
+    )
+
+    var lastRoll by mutableStateOf<RollReport?>(null)
+        private set
+
+    /** Бросает кости удара, записывает бросок в журнал и отдаёт итог. */
+    private fun rollHit(unit: Combatant, target: Combatant, hit: Hit, healing: Boolean): Int {
+        val roll = hit.dice.roll(rng)
+        val amount = hit.scale(roll.total)
+        val note = if (amount != roll.total) " → $amount" else ""
+        log += "🎲 ${unit.type.name} ${hit.dice}: ${roll.describe()}$note"
+        lastRoll = RollReport(
+            seq = (lastRoll?.seq ?: 0) + 1,
+            who = unit.type.name,
+            friendly = unit.team == Team.PLAYER,
+            roll = roll,
+            amount = amount,
+            target = target.type.name,
+            healing = healing,
+        )
+        return amount
+    }
 
     fun canTarget(attacker: Combatant, target: Combatant): Boolean {
         if (!target.alive || attacker.pos.reach(target.pos) > attacker.type.range) return false
@@ -351,54 +386,61 @@ class BattleState(
         }
     }
 
-    /** Что случится с целью, если ударить прямо сейчас. */
+    /**
+     * Что может случиться с целью. Урон теперь случаен, поэтому это не одно
+     * число, а разброс плюс шанс убить — посчитанный по точному распределению
+     * костей, а не прикинутый по среднему.
+     */
     data class Forecast(
         val healing: Boolean,
-        /** Сколько снимет здоровья (или вылечит) после щита. */
-        val amount: Int,
-        /** Сколько съест щит цели. */
+        /** Что бросается: «2к4+3». */
+        val dice: String,
+        /** Сколько снимет здоровья (или вылечит) после щита — от и до. */
+        val minAmount: Int,
+        val maxAmount: Int,
+        /** Сколько самое большее съест щит цели. */
         val absorbed: Int,
-        /** Здоровье цели после удара. */
-        val remaining: Int,
-        val lethal: Boolean,
-        /** Сколько достанется каждому соседу цели, 0 — если никого не заденет. */
-        val splash: Int,
+        /** Здоровье цели после удара — от и до. */
+        val minRemaining: Int,
+        val maxRemaining: Int,
+        /** Вероятность, что цель умрёт, от 0 до 1. */
+        val lethalChance: Double,
+        /** Сколько достанется каждому соседу цели, 0..0 — если никого не заденет. */
+        val splashMin: Int,
+        val splashMax: Int,
         /** Что ещё повесит удар: яд, оглушение. */
         val extra: String,
-    )
+    ) {
+        val lethal: Boolean get() = lethalChance >= 0.999
+    }
 
-    /**
-     * Предпросмотр удара активного бойца по цели. Считает по тем же формулам,
-     * что и настоящий удар, поэтому цифры на экране не врут.
-     */
     fun forecast(target: Combatant, withSkill: Boolean = false): Forecast? {
         val unit = active ?: return null
         val skill = unit.skill
 
-        val raw: Int
+        val hit: Hit?
         val healing: Boolean
-        val splash: Int
+        val splashes: Boolean
+        val half: Boolean
         val extra: String
 
         if (withSkill && skill != null) {
-            raw = skillAmount(unit, skill.kind)
+            hit = skillHit(unit, skill.kind)
             healing = skill.kind == SkillKind.TONIC
-            splash = when (skill.kind) {
-                SkillKind.FIRESTORM, SkillKind.RIFT -> raw
-                else -> 0
-            }
+            splashes = skill.kind == SkillKind.FIRESTORM || skill.kind == SkillKind.RIFT
+            half = false
             extra = when (skill.kind) {
-                SkillKind.TRIP, SkillKind.RIFT -> "оглушение"
+                SkillKind.TRIP, SkillKind.RIFT, SkillKind.HOWL -> "оглушение"
                 SkillKind.POISON_BLADE, SkillKind.SPIT -> "яд"
                 SkillKind.GUARD -> "щит 10"
-                SkillKind.HOWL -> "оглушение"
                 SkillKind.TONIC -> "снимет яд и оглушение"
                 else -> ""
             }
         } else {
-            raw = mainAmount(unit, target)
+            hit = mainHit(unit, target)
             healing = unit.type.ability == Ability.HEAL
-            splash = if (unit.type.ability == Ability.SPLASH) raw / 2 else 0
+            splashes = unit.type.ability == Ability.SPLASH
+            half = true
             extra = if (
                 unit.team == Team.PLAYER && Relic.VIALS in relics && unit.type.range >= 3
             ) {
@@ -408,23 +450,61 @@ class BattleState(
             }
         }
 
-        if (healing) {
-            val healed = minOf(healAmount(unit, raw), target.maxHp - target.hp)
-            return Forecast(true, healed, 0, target.hp + healed, false, 0, extra)
+        // Способность без броска (щит, вой): урона нет, остаётся только эффект.
+        if (hit == null) {
+            return Forecast(
+                false, "—", 0, 0, 0, target.hp, target.hp, 0.0, 0, 0, extra,
+            )
         }
 
-        val incoming = raw.coerceAtLeast(1)
-        val absorbed = minOf(target.shield, incoming)
-        val toHealth = incoming - absorbed
-        val remaining = (target.hp - toHealth).coerceAtLeast(0)
+        val outcomes = hit.distribution()
+        val splashMin = if (splashes) outcomes.keys.min().let { if (half) it / 2 else it } else 0
+        val splashMax = if (splashes) outcomes.keys.max().let { if (half) it / 2 else it } else 0
+
+        if (healing) {
+            val healed = outcomes.keys.map { minOf(healAmount(unit, it), target.maxHp - target.hp) }
+            return Forecast(
+                healing = true,
+                dice = hit.dice.toString(),
+                minAmount = healed.min(),
+                maxAmount = healed.max(),
+                absorbed = 0,
+                minRemaining = target.hp + healed.min(),
+                maxRemaining = target.hp + healed.max(),
+                lethalChance = 0.0,
+                splashMin = 0,
+                splashMax = 0,
+                extra = extra,
+            )
+        }
+
         val saved = target.team == Team.PLAYER && Relic.TALISMAN in relics && !talismanSpent
+        var lethal = 0.0
+        var absorbedMax = 0
+        val toHealth = mutableListOf<Int>()
+        val remaining = mutableListOf<Int>()
+        for ((value, p) in outcomes) {
+            val incoming = value.coerceAtLeast(1)
+            val absorbed = minOf(target.shield, incoming)
+            absorbedMax = maxOf(absorbedMax, absorbed)
+            val cut = incoming - absorbed
+            val left = (target.hp - cut).coerceAtLeast(0)
+            toHealth += cut
+            remaining += if (left == 0 && saved) 1 else left
+            if (left == 0 && !saved) lethal += p
+        }
+
         return Forecast(
             healing = false,
-            amount = toHealth,
-            absorbed = absorbed,
-            remaining = if (remaining == 0 && saved) 1 else remaining,
-            lethal = remaining == 0 && !saved,
-            splash = splash,
+            dice = hit.dice.toString(),
+            minAmount = toHealth.min(),
+            maxAmount = toHealth.max(),
+            absorbed = absorbedMax,
+            minRemaining = remaining.min(),
+            maxRemaining = remaining.max(),
+            lethalChance = lethal.coerceIn(0.0, 1.0),
+            splashMin = splashMin,
+            splashMax = splashMax,
             extra = extra,
         )
     }
@@ -435,7 +515,9 @@ class BattleState(
         if (!canTarget(attacker, target)) return
         markFx(attacker, target)
 
-        val amount = mainAmount(attacker, target)
+        val healing = attacker.type.ability == Ability.HEAL
+        // Кости бросаются один раз: соседи при сплеше и пробое получают долю того же броска.
+        val amount = rollHit(attacker, target, mainHit(attacker, target), healing)
         when (attacker.type.ability) {
             Ability.HEAL -> heal(attacker, target, amount)
 
@@ -495,6 +577,11 @@ class BattleState(
         markFx(unit, target)
         log += "${unit.type.name}: ${skill.name}"
 
+        // Один бросок на всю способность: вихрь обжигает всех одинаково.
+        val amount = skillHit(unit, skill.kind)
+            ?.let { rollHit(unit, target, it, healing = skill.kind == SkillKind.TONIC) }
+            ?: 0
+
         when (skill.kind) {
             SkillKind.GUARD -> {
                 val covered = units.filter {
@@ -505,30 +592,30 @@ class BattleState(
             }
 
             SkillKind.TRIP -> {
-                strike(unit, target, skillAmount(unit, skill.kind))
+                strike(unit, target, amount)
                 if (target.alive) target.apply(Status.STUN, 1)
             }
 
-            SkillKind.VOLLEY -> strike(unit, target, skillAmount(unit, skill.kind))
+            SkillKind.VOLLEY -> strike(unit, target, amount)
 
             SkillKind.FIRESTORM -> {
                 (listOf(target) + neighboursOf(target, unit.team)).forEach {
-                    strike(unit, it, skillAmount(unit, skill.kind))
+                    strike(unit, it, amount)
                 }
             }
 
             SkillKind.TONIC -> {
-                heal(unit, target, skillAmount(unit, skill.kind))
+                heal(unit, target, amount)
                 target.clearStatuses()
             }
 
             SkillKind.POISON_BLADE -> {
-                strike(unit, target, skillAmount(unit, skill.kind))
+                strike(unit, target, amount)
                 if (target.alive) target.apply(Status.POISON, 3)
             }
 
             SkillKind.SPIT -> {
-                strike(unit, target, skillAmount(unit, skill.kind))
+                strike(unit, target, amount)
                 if (target.alive) target.apply(Status.POISON, 3)
             }
 
@@ -536,7 +623,7 @@ class BattleState(
 
             SkillKind.RIFT -> {
                 (listOf(target) + neighboursOf(target, unit.team)).forEach {
-                    strike(unit, it, skillAmount(unit, skill.kind))
+                    strike(unit, it, amount)
                 }
                 if (target.alive) target.apply(Status.STUN, 1)
             }
@@ -676,7 +763,7 @@ object BattleFactory {
                 type = hero.type,
                 team = Team.PLAYER,
                 maxHp = hero.maxHp,
-                baseAttack = hero.attack,
+                baseDamage = hero.damage,
                 hp = hero.hp,
                 pos = Pos(spread(i), HEIGHT - 1 - i / WIDTH),
                 heroUid = hero.uid,
@@ -684,18 +771,27 @@ object BattleFactory {
         }
 
         foes.forEachIndexed { i, (type, bonus) ->
+            // Каждый враг выбрасывает здоровье заново: два упыря бывают разными.
+            val hp = type.hp.roll(rng).total + bonus
             units += Combatant(
                 id = nextId++,
                 type = type,
                 team = Team.ENEMY,
-                maxHp = type.maxHp + bonus,
-                baseAttack = type.attack + bonus / 6,
-                hp = type.maxHp + bonus,
+                maxHp = hp,
+                baseDamage = type.damage.plus(bonus / 6),
+                hp = hp,
                 pos = Pos(spread(i), i / WIDTH),
             )
         }
 
-        return BattleState(WIDTH, HEIGHT, units, growTerrain(units.map { it.pos }.toSet(), rng), relics)
+        return BattleState(
+            width = WIDTH,
+            height = HEIGHT,
+            combatants = units,
+            terrain = growTerrain(units.map { it.pos }.toSet(), rng),
+            relics = relics,
+            rng = rng,
+        )
     }
 
     /** Раскидывает камни, деревья и бурелом по середине поля, не задевая строй. */
